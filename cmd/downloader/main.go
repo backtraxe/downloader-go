@@ -24,6 +24,7 @@ import (
 	"github.com/backtraxe/downloader-go/internal/netdns"
 	"github.com/backtraxe/downloader-go/internal/result"
 	"github.com/backtraxe/downloader-go/internal/telegram"
+	"github.com/backtraxe/downloader-go/internal/termuxenv"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
 	"github.com/backtraxe/downloader-go/internal/urlutil"
 )
@@ -49,6 +50,9 @@ type dependencies struct {
 }
 
 func main() {
+	// Termux 的 CA bundle 不在标准路径，先指到 $PREFIX/etc/tls，否则所有
+	// HTTPS 请求都会报 unknown authority。
+	termuxenv.ConfigureDefault()
 	// Termux 没有 /etc/resolv.conf，纯 Go 解析器会退回 [::1]:53；在 Termux
 	// 上换成直连公共 DNS 的解析器。其他平台是 no-op。
 	netdns.InstallDefault()

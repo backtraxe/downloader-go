@@ -50,6 +50,11 @@ DOWNLOADER_DNS=1.1.1.1:53,8.8.8.8:53 dl-go bot
 DOWNLOADER_DNS=off dl-go bot      # 保留系统解析器
 ```
 
+Termux 的 CA 证书在 `$PREFIX/etc/tls/`，不在 Go 默认查找的路径里。
+`dl-go` 启动时会自动设置 `SSL_CERT_FILE` / `SSL_CERT_DIR`，避免
+`x509: certificate signed by unknown authority`；如需覆盖，可在启动前
+自行 export 这两个变量。
+
 ## 命令
 
 全局 `--data-dir` 必须写在子命令之前。
