@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -145,6 +146,13 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 		default:
 			return failed("解析页面数据失败: " + err.Error())
 		}
+	}
+
+	// 视频笔记但没取到直链时给出可定位的告警：streams 为空表示页面结构
+	// 变更；非空表示现有编码/字段都没命中，需按这些键补充解析。
+	if note.hasVideo && note.VideoURL == "" {
+		slog.Warn("笔记包含视频但未取到播放地址",
+			"note", note.ID, "streams", note.videoStreamKeys)
 	}
 
 	baseTitle := resolveBasename(note)

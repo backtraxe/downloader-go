@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/media"
@@ -59,6 +60,10 @@ type Note struct {
 	tags []string
 	// liveByIndex 与 Images 等长，记录每张图对应的实况视频（可为空）。
 	liveByIndex []string
+	// hasVideo 表示页面声明了 note.video；videoStreamKeys 是其中的流键，
+	// 用于 VideoURL 解析失败时定位页面结构变化。
+	hasVideo        bool
+	videoStreamKeys []string
 }
 
 // initialStatePattern 是兜底提取器（贪婪匹配到 </script> 前最后一个 }）。
@@ -346,7 +351,10 @@ func ParseInitialState(html string) (*Note, error) {
 		}
 	}
 	if entry.Note.Video != nil {
-		note.VideoURL = ensureHTTPS(videoURL(*entry.Note.Video))
+		note.hasVideo = true
+		videoLink, streamKeys := videoURL(*entry.Note.Video)
+		note.VideoURL = ensureHTTPS(videoLink)
+		note.videoStreamKeys = streamKeys
 	}
 	return note, nil
 }
@@ -449,17 +457,39 @@ type rawImage struct {
 type rawVideo struct {
 	URL   string `json:"url"`
 	Media struct {
-		Stream struct {
-			H264 []rawStream `json:"h264"`
-		} `json:"stream"`
+		// Stream 的键随笔记编码变化：h264/h265/av1 都可能出现，新笔记
+		// 常常不再提供 h264。只用 map 解码，具体优先级见 videoStreamOrder。
+		Stream map[string][]rawStream `json:"stream"`
 	} `json:"media"`
 }
 
-// rawStream 是 h264/实况视频流的一档。
+// rawStream 是视频流/实况视频的一档。
 type rawStream struct {
-	MasterURL    string  `json:"masterUrl"`
-	QualityType  string  `json:"qualityType"`
-	VideoBitrate float64 `json:"videoBitrate"`
+	MasterURL    string   `json:"masterUrl"`
+	BackupURLs   []string `json:"backupUrls"`
+	URL          string   `json:"url"`
+	QualityType  string   `json:"qualityType"`
+	VideoBitrate float64  `json:"videoBitrate"`
+}
+
+// videoStreamOrder 是笔记级视频的编码优先级。h264 兼容性最好，优先选；
+// 高码率/h265/av1 笔记没有 h264 时依次回退，避免“有视频却不出 video.mp4”。
+var videoStreamOrder = []string{"h264", "h265", "av1"}
+
+// streamURL 取一档流的直链：masterUrl → url → backupUrls[0]。
+func streamURL(stream rawStream) string {
+	if stream.MasterURL != "" {
+		return stream.MasterURL
+	}
+	if stream.URL != "" {
+		return stream.URL
+	}
+	for _, backup := range stream.BackupURLs {
+		if backup != "" {
+			return backup
+		}
+	}
+	return ""
 }
 
 // qualityRank 把 qualityType 映射为可比较的画质档位（LD < SD < HD）。
@@ -476,18 +506,19 @@ func qualityRank(s rawStream) (int, float64) {
 	}
 }
 
-// bestStream 选画质最高的一档；无 masterUrl 的候选跳过。
+// bestStream 选画质最高的一档；没有可用直链的候选跳过。
 func bestStream(streams []rawStream) string {
 	best := ""
 	var bestRank int
 	var bestBitrate float64
 	for _, stream := range streams {
-		if stream.MasterURL == "" {
+		candidate := streamURL(stream)
+		if candidate == "" {
 			continue
 		}
 		rank, bitrate := qualityRank(stream)
 		if best == "" || rank > bestRank || (rank == bestRank && bitrate > bestBitrate) {
-			best = stream.MasterURL
+			best = candidate
 			bestRank = rank
 			bestBitrate = bitrate
 		}
@@ -531,12 +562,20 @@ func livePhotoURL(img rawImage) string {
 	return ""
 }
 
-// videoURL 从 h264 流里选最高画质；无 h264 时回退顶层 url。
-func videoURL(video rawVideo) string {
-	if len(video.Media.Stream.H264) > 0 {
-		return bestStream(video.Media.Stream.H264)
+// videoURL 按 h264 → h265 → av1 选最高画质；都为空时回退顶层 url。
+// 同时返回页面实际提供的流键，供“有视频但没直链”时输出可定位的日志。
+func videoURL(video rawVideo) (string, []string) {
+	keys := make([]string, 0, len(video.Media.Stream))
+	for key := range video.Media.Stream {
+		keys = append(keys, key)
 	}
-	return video.URL
+	sort.Strings(keys)
+	for _, key := range videoStreamOrder {
+		if candidate := bestStream(video.Media.Stream[key]); candidate != "" {
+			return candidate, keys
+		}
+	}
+	return video.URL, keys
 }
 
 // ensureHTTPS 把协议相对（//）与 http:// 的媒体链接统一升级为 https://。

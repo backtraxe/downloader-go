@@ -156,6 +156,48 @@ func TestParseInitialStateLiveAndVideo(t *testing.T) {
 	}
 }
 
+// TestParseInitialStateVideoFallbacks 覆盖新笔记只给 h265/av1，以及
+// h264 档只有 backupUrls 的情况：都必须能取到视频直链。
+func TestParseInitialStateVideoFallbacks(t *testing.T) {
+	cases := []struct {
+		name    string
+		streams string
+		want    string
+	}{
+		{
+			name: "h264 无直链时回退 h265",
+			streams: `"h264":[{"masterUrl":"","qualityType":"HD"}],` +
+				`"h265":[{"masterUrl":"https://x/v_h265.mp4","qualityType":"HD"}]`,
+			want: "https://x/v_h265.mp4",
+		},
+		{
+			name:    "只有 av1",
+			streams: `"av1":[{"masterUrl":"https://x/v_av1.mp4","qualityType":"HD"}]`,
+			want:    "https://x/v_av1.mp4",
+		},
+		{
+			name: "masterUrl 为空时用 backupUrls",
+			streams: `"h264":[{"masterUrl":"","backupUrls":["https://x/v_backup.mp4"],` +
+				`"qualityType":"HD"}]`,
+			want: "https://x/v_backup.mp4",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			html := `<script>window.__INITIAL_STATE__ = {"note":{"noteDetailMap":{"v1":{"note":{` +
+				`"noteId":"v1","imageList":[{"urlDefault":"https://x/cover.jpg"}],` +
+				`"video":{"media":{"stream":{` + tc.streams + `}}}}}}}}}</script>`
+			note, err := ParseInitialState(html)
+			if err != nil {
+				t.Fatalf("ParseInitialState: %v", err)
+			}
+			if note.VideoURL != tc.want {
+				t.Fatalf("video=%q want %q", note.VideoURL, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseInitialStateNoNoteData(t *testing.T) {
 	cases := []string{
 		`<script>window.__INITIAL_STATE__ = {"note":{"noteDetailMap":{}}}</script>`,
