@@ -1,8 +1,13 @@
 // Package httpclient 提供全站共用的 HTTP 客户端。
 //
-// https 请求使用 utls 模拟浏览器 TLS ClientHello 指纹，并默认走 HTTP/2；
-// http:// 请求使用标准 net/http 传输层。所有请求共享一个 CookieJar，
-// 因此重定向与后续请求会自动携带服务端下发的 Cookie。
+// https 直连请求使用 utls 模拟浏览器 TLS ClientHello 指纹，默认走 HTTP/2，
+// 服务端不支持 h2 时自动回退到 HTTP/1.1；http:// 请求使用标准 net/http
+// 传输层。按 URL scheme 逐跳选择传输层，因此跨协议重定向不会丢失指纹。
+//
+// 经 Options.Proxy 的请求例外：Go 的 DialTLSContext 对代理 CONNECT 隧道内的
+// HTTPS 不生效，代理路径使用 HTTP/1.1 + 标准库 TLS，不使用 utls 指纹。
+//
+// 所有请求共享一个 CookieJar，重定向与后续请求会自动携带服务端下发的 Cookie。
 package httpclient
 
 import (
@@ -34,19 +39,19 @@ type Profile struct {
 }
 
 const (
-	chrome155UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-		"(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+	chrome133UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+		"(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 	chrome120UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 var (
-	// Chrome155 是默认配置。当前 utls 版本尚不提供 HelloChrome_155，
-	// 因此使用其支持的最新 Chrome 指纹（133）作为近似，UA 仍按 155 发送。
-	Chrome155 = Profile{
-		Name:      "chrome155",
+	// Chrome133 是默认配置，UA 与 utls 指纹版本严格一致
+	// （utls v1.8.2 尚不提供 HelloChrome_155）。
+	Chrome133 = Profile{
+		Name:      "chrome133",
 		Hello:     utls.HelloChrome_133,
-		UserAgent: chrome155UserAgent,
+		UserAgent: chrome133UserAgent,
 	}
 
 	// Chrome120 对 TLS 版本要求更保守的站点使用。
@@ -77,11 +82,18 @@ func DefaultTimeouts() Timeouts {
 
 // Options 是创建 Client 的配置。
 type Options struct {
-	Profile            Profile
-	Timeouts           Timeouts
-	Proxy              string // 可选，http(s)://host:port；空串表示直连
-	InsecureSkipVerify bool   // 仅测试/自签证书场景使用
-	ForceHTTP1         bool   // 强制 https 走 HTTP/1.1（部分站点拒绝 h2 时使用）
+	Profile  Profile
+	Timeouts Timeouts
+
+	// Proxy 可选，http(s)://host:port；空串表示直连。
+	//
+	// 配置代理后 https 固定走 HTTP/1.1。注意 Go 的 DialTLSContext 对代理
+	// CONNECT 隧道内的 HTTPS 不生效，因此经代理的 HTTPS 使用标准库 TLS，
+	// 不套用 utls 指纹；只有直连 HTTPS 才会模拟浏览器 fingerprint。
+	Proxy string
+
+	InsecureSkipVerify bool // 仅测试/自签证书场景使用
+	ForceHTTP1         bool // 强制 https 走 HTTP/1.1（部分站点拒绝 h2 时使用）
 }
 
 // Request 描述一次 GET 请求。
@@ -138,20 +150,19 @@ func (r *Response) RaiseForStatus() error {
 	return fmt.Errorf("httpclient: HTTP %d %s: %s", r.StatusCode, http.StatusText(r.StatusCode), target)
 }
 
-// Client 是并发安全的 HTTP 客户端，可按 URL scheme 选择传输层。
+// Client 是并发安全的 HTTP 客户端。
 type Client struct {
 	opts    Options
-	secure  *http.Client // https：utls（+ HTTP/2）
-	plain   *http.Client // http：标准 net/http
+	http    *http.Client
 	initErr error
 }
 
-// New 创建 Client。Profile 为零值时使用 Chrome155，Timeouts 为零值时使用默认值。
+// New 创建 Client。Profile 为零值时使用 Chrome133，Timeouts 为零值时使用默认值。
 //
 // 代理地址非法时不会 panic，错误会由首次 Get 返回。
 func New(opts Options) *Client {
 	if opts.Profile.Name == "" {
-		opts.Profile = Chrome155
+		opts.Profile = Chrome133
 	}
 	if opts.Timeouts == (Timeouts{}) {
 		opts.Timeouts = DefaultTimeouts()
@@ -168,9 +179,17 @@ func New(opts Options) *Client {
 		return &Client{opts: opts, initErr: err}
 	}
 
-	newHTTPClient := func(rt http.RoundTripper) *http.Client {
-		return &http.Client{
-			Transport: rt,
+	// 只创建一个 http.Client，由 schemeRouter 在每一跳按 scheme 选择
+	// 传输层；这样跨协议重定向（http↔https）不会走错 transport。
+	router := &schemeRouter{
+		plain:  buildPlainTransport(opts, proxyURL),
+		secure: buildSecureTransport(opts, proxyURL),
+	}
+
+	return &Client{
+		opts: opts,
+		http: &http.Client{
+			Transport: router,
 			Jar:       jar,
 			CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 				if len(via) >= maxRedirects {
@@ -178,13 +197,7 @@ func New(opts Options) *Client {
 				}
 				return nil
 			},
-		}
-	}
-
-	return &Client{
-		opts:   opts,
-		secure: newHTTPClient(buildSecureTransport(opts, proxyURL)),
-		plain:  newHTTPClient(buildPlainTransport(opts, proxyURL)),
+		},
 	}
 }
 
@@ -208,8 +221,18 @@ func (c *Client) Get(ctx context.Context, req Request) (*Response, error) {
 		return nil, fmt.Errorf("httpclient: unsupported url scheme %q", u.Scheme)
 	}
 
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	// Header 超时覆盖“发出请求到收到响应头”这段（HTTP/2 没有
+	// ResponseHeaderTimeout 可用）。拿到响应头后停表；body 关闭时
+	// cancel，避免请求上下文与定时器泄漏。
+	reqCtx, cancel := context.WithCancel(ctx)
+	if headerTimeout := c.opts.Timeouts.Header; headerTimeout > 0 {
+		timer := time.AfterFunc(headerTimeout, cancel)
+		defer timer.Stop()
+	}
+
+	hreq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.String(), nil)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("httpclient: build request: %w", err)
 	}
 	for key, values := range req.Header {
@@ -228,13 +251,9 @@ func (c *Client) Get(ctx context.Context, req Request) (*Response, error) {
 		}
 	}
 
-	hc := c.secure
-	if u.Scheme == "http" {
-		hc = c.plain
-	}
-
-	resp, err := hc.Do(hreq)
+	resp, err := c.http.Do(hreq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("httpclient: GET %s: %w", u.Redacted(), err)
 	}
 
@@ -245,9 +264,22 @@ func (c *Client) Get(ctx context.Context, req Request) (*Response, error) {
 	return &Response{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
-		Body:       resp.Body,
+		Body:       &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel},
 		URL:        finalURL,
 	}, nil
+}
+
+// cancelOnCloseBody 在响应体关闭时取消请求上下文，释放 Header 超时定时器
+// 所依赖的 context。
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // parseProxy 解析代理地址；缺少 scheme 时按 http:// 补全。
