@@ -1884,6 +1884,14 @@ func TestHandleMessageSkippedAndFailed(t *testing.T) {
 func TestHandleMessageUploadsOnlyNewFiles(t *testing.T) {
     // dispatch 返回 Post.Files 两项；断言上传两次，且没有扫描 download/ 目录
 }
+
+func TestRunHandlesChannelPost(t *testing.T) {
+    // fake getUpdates 返回一条 channel_post；断言被处理（reply 或 dispatch）。
+}
+
+func TestUploadPathSkipsMarkersAndPartials(t *testing.T) {
+    // 目录含 video.mp4、.001.skip、x.part；只上传 video.mp4。
+}
 ```
 
 - [ ] **Step 2: 写 CLI 上传测试**
@@ -1903,12 +1911,12 @@ Expected: FAIL。
 - [ ] **Step 4: 实现**
 
 - `HandleMessage`：`/start`/`/help` 回帮助；非频道校验白名单；`extractURLs`；逐条 `logging.WithRequest` + `Dispatch`；`Failed`/`NoMedia`/`Skipped` 分别回文案；`Posts` 逐个 `Uploader.Send`；完成提示带 PARTIAL 详情；文字提示用 `AfterFunc` 按 TTL 删除。
-- `Run`：启动时 `GetUpdates(offset=0, timeout=0)` 跳过积压，然后长轮询；网络错误 5s 重试；`message` 与 `channel_post` 都处理。
-- `UploadPath`：目录按 `PlanGroups` 发送，单文件直接分类发送。
+- `Run`：启动时 `GetUpdates(offset=0, timeout=0)` 跳过积压（15s 超时），然后长轮询（每次 40s 超时）；网络错误/超时 5s 重试；`message` 与 `channel_post` 都处理。**所有前台 Telegram 调用（sendMessage/sendMediaGroup/上传/删除）都要有 60s 超时**，不能只依赖进程级 context，否则半开连接会让 5s 重试永远不触发。
+- `UploadPath`：目录按 `PlanGroups` 发送，单文件直接分类发送；**目录收集时跳过隐藏文件（`.` 前缀）和 `fsutil.IsPartialDownload` 命中的 `.part`/`.ytdl`**，否则会把手写后端的 `.001.skip` 标记和半截文件当文档上传。
 
 - [ ] **Step 5: 接入主程序**
 
-`cmd/downloader/main.go` 增加 `bot` 与 `upload` 子命令；`bot` 加载配置，未配置时打印指引并返回 1。
+`cmd/downloader/main.go` 增加 `bot` 与 `upload` 子命令；`bot`/`upload` 加载配置，未配置时打印指引并返回 1。**模板占位值也算未配置**：`bot_token` 为空或以 `在此` 开头，或 `chat_id` 为 `""`/`0`，都要打印指引，不能用占位 token 发网络请求。
 
 - [ ] **Step 6: 运行测试确认通过**
 
