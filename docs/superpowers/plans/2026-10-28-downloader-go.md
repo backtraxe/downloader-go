@@ -1489,8 +1489,23 @@ func TestDownloadNoteWritesNumberedImages(t *testing.T) {
     // 断言 download/douyin/<author>/<title>_<id>/001.png 存在，Result.Posts[0].Files 长度 1。
 }
 
-func TestDownloadNoteJSVMFails(t *testing.T) {
-    // httptest 返回 "_$jsvmprt"；断言 Status==failed 且 Message 含 "Cookie"。
+func TestDownloadNoteJSVMFallsBackToDetailAPI(t *testing.T) {
+    // httptest 页面返回 "_$jsvmprt"；把 detailAPIBase 指向返回有效 aweme 的 server；
+    // 断言笔记仍成功下载（Post.Files 非空）。
+}
+
+func TestDownloadNoteJSVMFailsWhenDetailAlsoFails(t *testing.T) {
+    // httptest 页面返回 "_$jsvmprt"；detailAPIBase 返回 403/空响应；
+    // 断言 Status==failed 且 Message 含 "Cookie"。
+}
+
+func TestDetailAPIRetriesEmptyResponse(t *testing.T) {
+    // detail API 第一次 200 空 body，第二次有效 JSON；Sleep 注入 no-op；
+    // 断言成功且只产生一个 Post。
+}
+
+func TestPageRetriesTransient(t *testing.T) {
+    // 页面第一次 503，第二次正常 pace_f；断言成功。
 }
 ```
 
@@ -1503,8 +1518,9 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-- 笔记：GET 页面，`DetectChallenge` 非空直接 `failed`；`ParsePaceF` 失败再尝试 `RENDER_DATA`/`_ROUTER_DATA`；仍失败则调签名 detail API 兜底。
-- 视频：拼 detail API 参数，`douyinsign.NewABogus(ua).GetValue(query, ...)` + `websign.Sign(...)`；Cookie 解析出 `UIFID`，缺失返回 `failed` 并提示；HTTP 403 / 200 空响应分别给出对应文案。
+- 笔记：GET 页面（最多 3 次，瞬时错误退避）；`DetectChallenge` 非空时**先调签名 detail API 兜底**，成功则继续下载，失败才返回对应的 jsvm/验证码 Cookie 提示；`ParsePaceF` 失败再尝试 `RENDER_DATA`/`_ROUTER_DATA`；仍失败则调签名 detail API 兜底。
+- 视频：拼 detail API 参数，`douyinsign.NewABogus(ua).GetValue(query, ...)` + `websign.Sign(...)`；Cookie 解析出 `UIFID`，缺失返回 `failed` 并提示；HTTP 403 / 200 空响应分别给出对应文案。detail API 最多 3 次；2xx 空响应、非 JSON、瞬时网络错误都重试，最终仍失败才报 Cookie 失效。
+- 为测试注入 `Sleep func(time.Duration)`（默认 `time.Sleep`）；退避 200ms/400ms（detail）与 300ms/600ms（页面），测试里替换为 no-op。
 - 媒体下载用 `httpclient.DownloadFile`，Referer 用原页面；图片按 `001.ext`，实况视频同序号；笔记级视频 `video.mp4`。
 - 输出目录 `fsutil.BuildDownloadDir(dataDir, "douyin", title, author)`，标题加 `_<awemeId>`。
 
