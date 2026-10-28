@@ -146,7 +146,7 @@ URL → sites.Detect → dispatch
 
 ### 5.4 HTTP 客户端
 
-- `utls` 使用固定的 Chrome profile；每个站点定义 `{HelloID, UA}`，保证 UA 与指纹版本一致。受 utls 可用预设限制：xhs/douyin 用 `HelloChrome_155`（UA 同步为 Chrome/155），generic 用 `HelloChrome_120`（UA Chrome/120）；不再追求与 Python 版的 chrome150/chrome110 逐版本一致。
+- `utls` 使用固定的 Chrome profile；每个站点定义 `{HelloID, UA}`，保证 UA 与指纹版本一致。受 utls v1.8.2 可用预设限制：xhs/douyin 用 `HelloChrome_133`（UA 同步为 Chrome/133，这是当前依赖里最新的 Chrome 预设），generic 用 `HelloChrome_120`（UA Chrome/120）；不再追求与 Python 版的 chrome150/chrome110 逐版本一致。
 - **先用真机 spike 验证**：M2 开始前，用一个最小 Go 程序在 Termux 上请求小红书笔记页与抖音笔记页，确认 utls + HTTP/2 能通过风控；抖音视频详情 API 需要签名，留到签名移植后再验证。通过则 v1 只保留 utls；失败则把系统 curl 兜底提升为 v1 必做项（spike 代码不进入正式仓库）。
 - 连接超时 15s、响应头超时 30s、读取空闲超时 30s；媒体下载不设总时长上限。
 - 支持重定向、Cookie jar、gzip；媒体流式写入 `.part` 后 `os.Rename`。

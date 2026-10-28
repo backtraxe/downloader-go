@@ -68,13 +68,13 @@ func main() {
         raw, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, network, addr)
         if err != nil { return nil, err }
         host, _, _ := net.SplitHostPort(addr)
-        u := utls.UClient(raw, &utls.Config{ServerName: host, NextProtos: []string{"h2", "http/1.1"}}, utls.HelloChrome_155)
+        u := utls.UClient(raw, &utls.Config{ServerName: host, NextProtos: []string{"h2", "http/1.1"}}, utls.HelloChrome_133)
         if err := u.HandshakeContext(ctx); err != nil { raw.Close(); return nil, err }
         return u, nil
     }
     tr := &http2.Transport{DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) { return dial(ctx, network, addr) }}
     req, _ := http.NewRequest("GET", target, nil)
-    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36")
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
     req.Header.Set("Cookie", cookie)
     resp, err := (&http.Client{Transport: tr}).Do(req)
     if err != nil { panic(err) }
@@ -722,7 +722,7 @@ git commit -m "feat: add cookie parsing, import and checks"
 
 **Interfaces:**
 - Produces: `type Profile struct { Name string; Hello utls.ClientHelloID; UserAgent string }`
-- Produces: `var Chrome155, Chrome120 Profile`
+- Produces: `var Chrome133, Chrome120 Profile`（`Chrome133` 用 `utls.HelloChrome_133` + UA Chrome/133；utls v1.8.2 没有 155 预设）
 - Produces: `type Timeouts struct { Dial, TLS, Header, Idle time.Duration }`、`func DefaultTimeouts() Timeouts`
 - Produces: `type Options struct { Profile Profile; Timeouts Timeouts; Proxy string; InsecureSkipVerify bool }`
 - Produces: `type Request struct { URL string; Header http.Header; Cookie string }`
@@ -756,7 +756,7 @@ func TestGetOverHTTP2WithUTLS(t *testing.T) {
     srv.StartTLS()
     defer srv.Close()
 
-    c := New(Options{Profile: Chrome155, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    c := New(Options{Profile: Chrome133, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
     h := http.Header{}
     h.Set("X-Test", "1")
     resp, err := c.Get(context.Background(), Request{URL: srv.URL, Header: h})
@@ -788,6 +788,53 @@ func TestGetFollowsRedirectAndKeepsCookies(t *testing.T) {
     u, _ := url.Parse(srv.URL + "/b")
     if resp.URL.Path != u.Path { t.Fatalf("final=%s", resp.URL) }
 }
+
+func TestProfilesAlignUAWithHello(t *testing.T) {
+    for _, p := range []Profile{Chrome133, Chrome120} {
+        if !strings.Contains(p.UserAgent, "/"+p.Hello.Version+".") {
+            t.Fatalf("%s: UA %q does not match Hello %s", p.Name, p.UserAgent, p.Hello.Version)
+        }
+    }
+}
+
+func TestCrossSchemeRedirects(t *testing.T) {
+    tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("tls"))
+    }))
+    defer tlsSrv.Close()
+    plainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.URL.Path == "/to-https" { http.Redirect(w, r, tlsSrv.URL, http.StatusFound); return }
+        w.Write([]byte("plain"))
+    }))
+    defer plainSrv.Close()
+    tlsToPlain := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, plainSrv.URL, http.StatusFound)
+    }))
+    defer tlsToPlain.Close()
+
+    c := New(Options{Profile: Chrome120, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    for _, raw := range []string{plainSrv.URL + "/to-https", tlsToPlain.URL} {
+        resp, err := c.Get(context.Background(), Request{URL: raw})
+        if err != nil { t.Fatalf("%s: %v", raw, err) }
+        resp.Close()
+        if resp.StatusCode != 200 { t.Fatalf("%s: status=%d", raw, resp.StatusCode) }
+    }
+}
+
+func TestFallsBackToHTTP1WhenALPNIsNotH2(t *testing.T) {
+    srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.ProtoMajor != 1 { t.Errorf("proto=%s", r.Proto) }
+        w.Write([]byte("h1"))
+    }))
+    srv.EnableHTTP2 = false
+    srv.StartTLS()
+    defer srv.Close()
+    c := New(Options{Profile: Chrome120, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    resp, err := c.Get(context.Background(), Request{URL: srv.URL})
+    if err != nil { t.Fatal(err) }
+    resp.Close()
+    if resp.StatusCode != 200 { t.Fatalf("status=%d", resp.StatusCode) }
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -810,7 +857,13 @@ dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 }
 ```
 
-用 `http2.Transport{DialTLSContext: ...}`，设置 `ReadIdleTimeout`/`PingTimeout`；`http.Client` 带 `cookiejar.New(nil)`，重定向上限 10。若 `profile.Name == "chrome120"` 且站点要求 HTTP/1.1，可切换到 `http.Transport{DialTLSContext: ...}`（由 `Options.ForceHTTP1` 控制，默认 false）。
+用 `http2.Transport{DialTLSContext: ...}`，设置 `ReadIdleTimeout`/`PingTimeout`；`http.Client` 带 `cookiejar.New(nil)`，重定向上限 10。实现要点：
+
+- 只构建一个 `http.Client`，其 `Transport` 是自定义 `RoundTripper`：按 `req.URL.Scheme` 逐跳选择 `http` → 标准 transport、`https` → utls transport。这样跨协议重定向（http→https、https→http）不会丢指纹或把 h2 帧发给 h1 服务端。
+- utls 握手后检查 `ConnectionState().NegotiatedProtocol == "h2"`；不是 h2 时用 HTTP/1.1 transport（utls + `NextProtos: ["http/1.1"]`）重试一次（仅 GET/HEAD 无 body 的请求需要支持）。
+- `Timeouts.Header` 在 `Get` 里用 `context.WithCancel` + `time.AfterFunc` 实现；成功拿到响应头后停止定时器，并在响应 body `Close` 时 `cancel`，避免泄漏。
+- `Options.Proxy` 只保证 HTTP/1.1 + 标准库 TLS（Go 的 `DialTLSContext` 对代理 HTTPS 不生效）；在 `Options.Proxy` 的文档注释里明确写出这个限制，不要声称代理路径仍使用 utls。
+- `ForceHTTP1` 可保留，但默认走 h2 + 自动回退。
 
 - [ ] **Step 4: 运行测试确认通过**
 
