@@ -8,14 +8,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/backtraxe/downloader-go/internal/fsutil"
 	"github.com/backtraxe/downloader-go/internal/result"
 )
 
 // UploadPath 把 CLI 给出的目录或单个文件上传到 chatID。
 //
 // 目录只收集第一层的普通文件并按文件名排序，作为一个作品上传（相册 +
-// document）；单文件直接上传，caption 为空时用不含扩展名的文件名作为
-// 标题。返回成功文件数与被跳过的本地路径。
+// document）；隐藏文件（手写后端写入的 `.NNN.skip` 标记等）与
+// fsutil.IsPartialDownload 命中的下载残留（`.part` / `.ytdl`）不上传。
+// 单文件直接上传，caption 为空时用不含扩展名的文件名作为标题。返回成功
+// 文件数与被跳过的本地路径。
 func UploadPath(ctx context.Context, u *Uploader, chatID, path, caption string) (sent int, skipped []string, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -29,9 +32,11 @@ func UploadPath(ctx context.Context, u *Uploader, chatID, path, caption string) 
 			return 0, nil, fmt.Errorf("telegram: read dir %s: %w", path, err)
 		}
 		for _, entry := range entries {
-			if entry.Type().IsRegular() {
-				files = append(files, filepath.Join(path, entry.Name()))
+			name := entry.Name()
+			if !entry.Type().IsRegular() || strings.HasPrefix(name, ".") || fsutil.IsPartialDownload(name) {
+				continue
 			}
+			files = append(files, filepath.Join(path, name))
 		}
 		sort.Strings(files)
 	} else {

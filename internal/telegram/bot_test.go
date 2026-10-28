@@ -534,3 +534,82 @@ func TestRunSkipsBacklogAndAdvancesOffset(t *testing.T) {
 		}
 	}
 }
+
+func TestRunHandlesChannelPost(t *testing.T) {
+	rec := &fakeTelegram{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasSuffix(req.URL.Path, "/getUpdates") {
+			rec.handler(w, req)
+			return
+		}
+		if err := req.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		offset, _ := strconv.ParseInt(req.FormValue("offset"), 10, 64)
+		timeout, _ := strconv.Atoi(req.FormValue("timeout"))
+
+		w.Header().Set("Content-Type", "application/json")
+		if timeout == 0 || offset != 0 {
+			// 启动拉取返回空积压；处理完 channel_post 后挂起等待取消。
+			if offset == 0 && timeout == 0 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []any{}})
+				return
+			}
+			<-req.Context().Done()
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []any{
+			map[string]any{
+				"update_id": 1,
+				"channel_post": map[string]any{
+					"message_id": 1,
+					"chat":       map[string]any{"id": -100, "type": "channel"},
+					"text":       "https://example.com/post",
+				},
+			},
+		}})
+	}))
+	defer srv.Close()
+
+	dispatched := make(chan string, 1)
+	bot := &Bot{
+		API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()},
+		// 频道绕过白名单；白名单为空也不应拒绝。
+		Config: config.Telegram{},
+		Dispatch: func(_ context.Context, url string, _ bool) result.Result {
+			dispatched <- url
+			return result.Result{Status: result.Skipped}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- bot.Run(ctx) }()
+
+	select {
+	case url := <-dispatched:
+		if url != "https://example.com/post" {
+			t.Fatalf("dispatched url=%q", url)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("channel_post was not dispatched")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after context cancel")
+	}
+
+	replies := strings.Join(rec.replies(), "\n")
+	if !strings.Contains(replies, "开始下载：https://example.com/post") {
+		t.Fatalf("replies=%q", replies)
+	}
+}

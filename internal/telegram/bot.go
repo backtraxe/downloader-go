@@ -20,10 +20,14 @@ const (
 	pollTimeoutSeconds = 25
 	// startupTimeoutSeconds 用于启动时拉取积压消息，不等待新消息。
 	startupTimeoutSeconds = 0
+	// startupTimeout 限制启动时拉取积压消息的时长。
+	startupTimeout = 15 * time.Second
+	// pollTimeout 限制单次长轮询的时长；比 timeout 参数留出网络余量。
+	pollTimeout = 40 * time.Second
 	// retryDelay 是 getUpdates 失败后的重试间隔。
 	retryDelay = 5 * time.Second
-	// deleteTimeout 限制删除过程消息的请求时长，避免后台 goroutine 永久挂起。
-	deleteTimeout = 30 * time.Second
+	// requestTimeout 限制单次前台 Telegram 调用（发消息、删除）。
+	requestTimeout = 60 * time.Second
 
 	// helpText 是 /start 与 /help 的回复。
 	helpText = "发链接即可：小红书 / 抖音图文或视频 / bilibili / youtube / instagram / x / 任意网页。产物会以相册或视频回传，caption 带 #作者 标签方便搜索。"
@@ -62,7 +66,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		return nil
 	}
 	for {
-		updates, err := b.API.GetUpdates(ctx, offset, pollTimeoutSeconds)
+		// 每轮长轮询单独限时：半开连接不会让循环永久卡住，超时后走 5s 重试。
+		pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+		updates, err := b.API.GetUpdates(pollCtx, offset, pollTimeoutSeconds)
+		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -99,7 +106,9 @@ func (b *Bot) initialOffset(ctx context.Context) (int64, error) {
 	if b.API == nil {
 		return 0, errors.New("telegram bot: nil API client")
 	}
-	updates, err := b.API.GetUpdates(ctx, 0, startupTimeoutSeconds)
+	startCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+	updates, err := b.API.GetUpdates(startCtx, 0, startupTimeoutSeconds)
 	if err != nil {
 		return 0, err
 	}
@@ -207,7 +216,9 @@ func (b *Bot) reply(ctx context.Context, chatID, text string) error {
 	if b.API == nil {
 		return errors.New("telegram bot: nil API client")
 	}
-	msg, err := b.API.SendMessage(ctx, chatID, text)
+	sendCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	msg, err := b.API.SendMessage(sendCtx, chatID, text)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -220,7 +231,7 @@ func (b *Bot) reply(ctx context.Context, chatID, text string) error {
 		after = time.AfterFunc
 	}
 	after(time.Duration(ttl)*time.Second, func() {
-		deleteCtx, cancel := context.WithTimeout(context.Background(), deleteTimeout)
+		deleteCtx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
 		// 删除失败只影响清理（频道内可能没有删除权限），不改变处理结果。
 		if err := b.API.DeleteMessage(deleteCtx, chatID, msg.MessageID); err != nil {

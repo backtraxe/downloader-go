@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -163,5 +165,33 @@ func TestRunWithRoutesBotAndUpload(t *testing.T) {
 	}
 	if strings.Join(uploadArgs, " ") != "a.jpg --caption 标题" {
 		t.Fatalf("uploadArgs=%v", uploadArgs)
+	}
+}
+
+func TestRunBotPlaceholderConfig(t *testing.T) {
+	dir := t.TempDir()
+	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":300}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	code := runBot(context.Background(), dir, func(context.Context, string, bool) result.Result {
+		return result.Result{}
+	}, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "请先在") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunUploadPlaceholderConfig(t *testing.T) {
+	dir := t.TempDir()
+	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":300}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runUpload(context.Background(), dir, []string{"some-file"}, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "请先在") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
 	}
 }

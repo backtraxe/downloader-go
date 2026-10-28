@@ -79,6 +79,32 @@ func TestUploadPathSingleFileDerivesTitle(t *testing.T) {
 	}
 }
 
+func TestUploadPathSkipsMarkersAndPartials(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"video.mp4", ".001.skip", "x.part"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := &fakeTelegram{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	t.Cleanup(srv.Close)
+	u := &Uploader{API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}}
+
+	sent, skipped, err := UploadPath(context.Background(), u, "123", dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent != 1 || len(skipped) != 0 {
+		t.Fatalf("sent=%d skipped=%v", sent, skipped)
+	}
+	names := rec.uploadedNames()
+	if len(names) != 1 || names[0] != "video.mp4" {
+		t.Fatalf("uploads=%v want [video.mp4]", names)
+	}
+}
+
 func TestUploadPathMissingFile(t *testing.T) {
 	u := &Uploader{API: &tgapi.Client{Token: "test"}}
 	if _, _, err := UploadPath(context.Background(), u, "123", filepath.Join(t.TempDir(), "nope"), ""); err == nil {

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/backtraxe/downloader-go/internal/backend/douyin"
 	"github.com/backtraxe/downloader-go/internal/backend/generic"
@@ -25,6 +27,10 @@ import (
 
 // 版本信息，发布时通过 -ldflags "-X main.version=..." 注入。
 var version, commit, date = "dev", "none", "unknown"
+
+// telegramRequestTimeout 限制单次 Telegram HTTP 请求（含媒体上传），
+// 避免半开连接让机器人永久阻塞。
+const telegramRequestTimeout = 60 * time.Second
 
 // dependencies 汇总命令依赖，测试可注入替身。
 type dependencies struct {
@@ -179,6 +185,26 @@ func printConfigGuidance(w io.Writer, path string, err error) {
 	}
 }
 
+// telegramConfigured 判断配置是否已填入真实值。模板占位值（token 以
+// “在此”开头、chat_id 为 0 或空）视为未配置，避免用占位凭据发网络请求。
+func telegramConfigured(cfg *config.Telegram) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.BotToken == "" || strings.HasPrefix(cfg.BotToken, "在此") {
+		return false
+	}
+	chatID := cfg.ChatID.String()
+	return chatID != "" && chatID != "0"
+}
+
+// newTelegramAPI 构造带请求超时的 Bot API 客户端。
+func newTelegramAPI(token string) *tgapi.Client {
+	api := tgapi.New(token)
+	api.HTTP = &http.Client{Timeout: telegramRequestTimeout}
+	return api
+}
+
 // runBot 加载配置并启动长轮询机器人。
 func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context, string, bool) result.Result, stderr io.Writer) int {
 	cfg, path, err := loadTelegramConfig(dataDir)
@@ -186,8 +212,8 @@ func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context
 		printConfigGuidance(stderr, path, err)
 		return 1
 	}
-	if cfg.BotToken == "" {
-		printConfigGuidance(stderr, path, errors.New("telegram.bot_token 为空"))
+	if !telegramConfigured(cfg) {
+		printConfigGuidance(stderr, path, errors.New("telegram 段仍是模板占位值"))
 		return 1
 	}
 	if dispatchFn == nil {
@@ -195,7 +221,7 @@ func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context
 		return 1
 	}
 
-	api := tgapi.New(cfg.BotToken)
+	api := newTelegramAPI(cfg.BotToken)
 	bot := &telegram.Bot{
 		API:      api,
 		Config:   *cfg,
@@ -223,12 +249,12 @@ func runUpload(ctx context.Context, dataDir string, args []string, stdout, stder
 		printConfigGuidance(stderr, cfgPath, err)
 		return 1
 	}
-	if cfg.BotToken == "" || cfg.ChatID.String() == "" {
-		printConfigGuidance(stderr, cfgPath, errors.New("telegram 段缺少 bot_token 或 chat_id"))
+	if !telegramConfigured(cfg) {
+		printConfigGuidance(stderr, cfgPath, errors.New("telegram 段仍是模板占位值"))
 		return 1
 	}
 
-	u := &telegram.Uploader{API: tgapi.New(cfg.BotToken)}
+	u := &telegram.Uploader{API: newTelegramAPI(cfg.BotToken)}
 	sent, skipped, err := telegram.UploadPath(ctx, u, cfg.ChatID.String(), path, caption)
 	if err != nil {
 		fmt.Fprintf(stderr, "上传失败：%v\n", err)
