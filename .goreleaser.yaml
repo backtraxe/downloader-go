@@ -1,5 +1,8 @@
 version: 2
 
+# Tag 带预发布后缀（如 v0.1.0-rc.1）时自动标为 prerelease，避免占用正式版本。
+prerelease: auto
+
 builds:
   - main: ./cmd/downloader
     binary: downloader
