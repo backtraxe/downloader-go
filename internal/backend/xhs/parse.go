@@ -472,9 +472,15 @@ type rawStream struct {
 	VideoBitrate float64  `json:"videoBitrate"`
 }
 
-// videoStreamOrder 是笔记级视频的编码优先级。h264 兼容性最好，优先选；
-// 高码率/h265/av1 笔记没有 h264 时依次回退，避免“有视频却不出 video.mp4”。
-var videoStreamOrder = []string{"h264", "h265", "av1"}
+// videoStreamOrder 是笔记级视频的编码优先级。小红书有两套流键名：
+// h264/h265/h266/av1，以及等价的 EF4/EF5/EF6/EF7（EF4=h264…EF7=av1）。
+// h264 兼容性最好，优先选；没有时依次回退，避免“有视频却不出 video.mp4”。
+var videoStreamOrder = []string{
+	"h264", "ef4",
+	"h265", "hevc", "ef5",
+	"h266", "vvc", "ef6",
+	"av1", "ef7",
+}
 
 // streamURL 取一档流的直链：masterUrl → url → backupUrls[0]。
 func streamURL(stream rawStream) string {
@@ -566,12 +572,14 @@ func livePhotoURL(img rawImage) string {
 // 同时返回页面实际提供的流键，供“有视频但没直链”时输出可定位的日志。
 func videoURL(video rawVideo) (string, []string) {
 	keys := make([]string, 0, len(video.Media.Stream))
-	for key := range video.Media.Stream {
+	byLower := make(map[string][]rawStream, len(video.Media.Stream))
+	for key, streams := range video.Media.Stream {
 		keys = append(keys, key)
+		byLower[strings.ToLower(key)] = streams
 	}
 	sort.Strings(keys)
 	for _, key := range videoStreamOrder {
-		if candidate := bestStream(video.Media.Stream[key]); candidate != "" {
+		if candidate := bestStream(byLower[key]); candidate != "" {
 			return candidate, keys
 		}
 	}

@@ -181,6 +181,21 @@ func TestParseInitialStateVideoFallbacks(t *testing.T) {
 				`"qualityType":"HD"}]`,
 			want: "https://x/v_backup.mp4",
 		},
+		{
+			// 真实笔记的流键：EF4=h264 … EF7=av1，优先选 EF4。
+			name: "EF4-EF7 键名",
+			streams: `"EF4":[{"masterUrl":"https://x/v_ef4.mp4","qualityType":"HD"}],` +
+				`"EF5":[{"masterUrl":"https://x/v_ef5.mp4","qualityType":"HD"}],` +
+				`"EF6":[{"masterUrl":"https://x/v_ef6.mp4","qualityType":"HD"}],` +
+				`"EF7":[{"masterUrl":"https://x/v_ef7.mp4","qualityType":"HD"}]`,
+			want: "https://x/v_ef4.mp4",
+		},
+		{
+			name: "EF4 为空时回退 EF5",
+			streams: `"EF4":[],` +
+				`"EF5":[{"masterUrl":"https://x/v_ef5.mp4","qualityType":"HD"}]`,
+			want: "https://x/v_ef5.mp4",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
