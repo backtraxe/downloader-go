@@ -1418,7 +1418,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-逐段移植 `core/douyin_sign/douyin_abogus.py`：常量表、`digest_of`、`user_agent_digest`、`jsBytes`、`leBytes`、`maskPair`、`expandNoise`、RC4、base64（alphabet `s4`）、字段表与校验位、`GetValue`。`NewABogus` 使用 `math/rand/v2` 的 `rand.Float64` 作为默认 `RNG`；测试注入 `fixedRNG`。`ContentType` 含 `multipart/form-data` 时 body 置空。文件头保留 Apache-2.0 声明。
+逐段移植 `core/douyin_sign/douyin_abogus.py`：常量表、`digest_of`、`user_agent_digest`、`jsBytes`、`leBytes`、`maskPair`、`expandNoise`、RC4、base64（alphabet `s4`）、字段表与校验位、`GetValue`。`NewABogus` 使用 `math/rand/v2` 的 `rand.Float64` 作为默认 `RNG`；测试注入 `fixedRNG`。`ContentType` 含 `multipart/form-data` 时 body 置空。**`SignOptions.NowMS` 必须由调用方传入当前 epoch 毫秒；0 或早于 fortnight epoch 的值一律返回错误（与 Python 一致），不自动取当前时间**——Task 15 用注入的 `Now` 提供。文件头保留 Apache-2.0 声明。
 
 - [ ] **Step 5: 运行测试确认通过**
 
