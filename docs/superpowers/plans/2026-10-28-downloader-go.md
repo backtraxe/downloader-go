@@ -1109,8 +1109,22 @@ func TestExtractAuthor(t *testing.T) {
 
 ```go
 func TestDownloadFiltersDecorativeAndWritesNumbered(t *testing.T) {
-    // httptest 提供 /page.html、/a.jpg（10x10 PNG）、/logo.png（10x10 PNG）
-    // 断言只写入 001.png，且目录名包含标题；logo 被文件名过滤。
+    // httptest 提供 /page.html、/a.png（400x400）、/logo.png（10x10）
+    // 断言只写入 001.png，且完整路径是 <DataDir>/download/<site>/<标题>/001.png；
+    // logo 被文件名过滤且不占用序号。
+}
+
+func TestSkipMarkerOnlySkipsSameURL(t *testing.T) {
+    // 预置 .001.skip 内容为旧 URL；页面第一个候选是新 URL。
+    // 断言重新下载并覆盖 marker，而不是 skipped。
+}
+
+func TestDecorativeNameInMiddleKeepsContiguousNumbers(t *testing.T) {
+    // 候选顺序 [logo.png, a.png, b.png]；断言输出 001.png、002.png，无 003/空洞。
+}
+
+func TestTitleStripsAuthorTail(t *testing.T) {
+    // 页面标题 "正文 来自 作者甲 - 示例站"；目录名不得包含 "正文 来自 作者甲"。
 }
 ```
 
@@ -1123,7 +1137,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-先 `go get github.com/PuerkitoBio/goquery`。扫描 `img/source/video` 的 `src`/`data-src`/`data-original`/`ess-data`/`srcset`（取第一个 URL）、`a[href]` 的媒体后缀、行内 `background-image`。去重保序；`data:` 丢弃。下载前 `media.IsDecorativeName` 过滤；落盘后 `media.IsDecorativeFile`（短边 <300px 或 <20KB）删除并写 `.skip`。总并发 5，同 host 用 `sync.Map` + 带缓冲 channel 限 2。标题取 `<title>` 并清理站点后缀；作者按 `正文 来自 X - 站点` 提取。目录用 `fsutil.BuildDownloadDir`。
+先 `go get github.com/PuerkitoBio/goquery`。扫描 `img/source/video` 的 `src`/`data-src`/`data-original`/`ess-data`/`srcset`（取第一个 URL）、`a[href]` 的媒体后缀、行内 `background-image`。去重保序；`data:` 丢弃。**先按 `media.IsDecorativeName` 预过滤候选，再对剩余候选取连续序号**（不能先编号再过滤）；落盘后 `media.IsDecorativeFile`（短边 <300px 或 <20KB）删除并写 `.<NNN>.skip`。`.skip` 预检查必须读取 marker 内容：只有内容等于当前候选 URL 才跳过；不等则删除 marker 并重新下载。总并发 5，同 host 用 `sync.Map` + 带缓冲 channel 限 2。标题取 `<title>`，剥离末尾 `- <站点>` 以及匹配到的 `正文 来自 <作者> - ` 前缀/尾段；作者按 `正文 来自 X - 站点` 提取（`site` 参数保留但不做严格校验，兼容现有测试）。目录根必须是 `filepath.Join(d.DataDir, "download")`，再传 `fsutil.BuildDownloadDir`。**不要在图片请求里硬编码 UA**：`httpclient.Client` 的 profile UA 已经与指纹对齐，后端覆盖会导致版本错配。
 
 - [ ] **Step 5: 运行测试确认通过**
 
