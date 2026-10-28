@@ -1220,7 +1220,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-`Dispatch` 顺序：`sites.Detect` → xiaohongshu（读 Cookie，缺失 `failed`；用 `cookies.ToHeader` 转成请求头）→ douyin（短链展开后判 note/video，读 Cookie 并转请求头）→ `bilibili/youtube/instagram/twitter` 走 YTDLP → 其他 Generic。`ResolveShortLink` 只对 `urlutil.IsShortLink` 发 GET，取 `resp.URL.String()`；失败原样返回。`runWith` 读取行，`q` 退出，`extractURLs` 后逐条 dispatch；`-f` 传 force。
+`Dispatch` 顺序：`sites.Detect` → xiaohongshu（读 Cookie，缺失 `failed`；用 `cookies.ToHeader` 转成请求头；nil handler 先于 Cookie 检查返回“后端尚未接入”）→ douyin（短链展开后判 note/video，读 Cookie 并转请求头；`/user/` 等非作品链接把**已展开的 resolved URL** 交给 YTDLP）→ `bilibili/youtube/instagram/twitter` **先 `ResolveShortLinkWithRetry` 展开短链**再走 YTDLP → 其他 Generic。`ResolveShortLink` 只对 `urlutil.IsShortLink` 发 GET，取 `resp.URL.String()`；失败原样返回。`runWith` 读取行，`q` 退出，`extractURLs` 后逐条 dispatch；`-f` 传 force。
 
 Task 11 把 `dispatch` 字段加进 `dependencies`，并在 `main.go` 里只接 YTDLP/Generic；`Handlers.XHS`/`DouyinNote`/`DouyinVideo` 保持 nil，`Dispatch` 遇到 nil 返回 `failed`（“后端尚未接入”），等 Task 15/16 再接。
 
