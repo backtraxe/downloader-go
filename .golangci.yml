@@ -1,0 +1,20 @@
+version: "2"
+
+linters:
+  exclusions:
+    presets:
+      # 忽略 Close / fmt.Fprint* / os.Remove 等“标准错误处理”告警：
+      # 这些调用在错误路径上失败没有可恢复动作（与 Go 标准库惯例一致）。
+      - std-error-handling
+    rules:
+      # 测试中的 ResponseWriter 写入、临时文件操作失败会直接体现在断言里；
+      # 逐条检查只会淹没真正的问题。生产代码仍由 errcheck 覆盖。
+      - path: _test\.go
+        linters:
+          - errcheck
+      # utls 指纹必须挂在 x/net/http2.Transport 的 DialTLSContext 上；
+      # 标准库 http.Transport 的替代路径无法保证同样的 ClientHello 行为。
+      - path: internal/httpclient/transport\.go
+        linters:
+          - staticcheck
+        text: "SA1019"

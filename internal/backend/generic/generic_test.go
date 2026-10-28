@@ -112,6 +112,37 @@ func TestExtractCandidatesDedupesAndDropsDataURLs(t *testing.T) {
 	}
 }
 
+// TestExtractCandidatesFiltersPageLinks 验证以媒体后缀结尾的页面链接
+// （MediaWiki 文件页、带 title=/returnto= 的详情页）不会被当成直链。
+func TestExtractCandidatesFiltersPageLinks(t *testing.T) {
+	html := `<html><body>
+      <a href="https://en.wikipedia.org/wiki/File:Example.jpg">wiki file</a>
+      <a href="https://en.wikipedia.org/w/index.php?title=File:X.jpg&amp;action=raw">index</a>
+      <a href="/page/File:Example.jpg">colon</a>
+      <a href="/file.jpg?title=Example">title query</a>
+      <a href="/file.jpg?returnto=Main">return query</a>
+      <a href="https://cdn.x/real.jpg">real</a>
+      <a href="https://cdn.x/real.jpg?w=100">real with width</a>
+    </body></html>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ExtractCandidates(doc, "https://site/p/1")
+	want := []string{
+		"https://cdn.x/real.jpg",
+		"https://cdn.x/real.jpg?w=100",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i, url := range want {
+		if got[i].URL != url {
+			t.Fatalf("candidate %d: got %q want %q", i, got[i].URL, url)
+		}
+	}
+}
+
 func TestExtractCandidatesFromTestdata(t *testing.T) {
 	data, err := os.ReadFile("testdata/page.html")
 	if err != nil {

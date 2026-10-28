@@ -64,11 +64,11 @@ func encodeComponent(value string) string {
 		switch {
 		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
 			c == '*', c == '-', c == '.', c == '_':
-			b.WriteByte(c)
+			_ = b.WriteByte(c)
 		default:
-			b.WriteByte('%')
-			b.WriteByte(upperHex[c>>4])
-			b.WriteByte(upperHex[c&0x0F])
+			_ = b.WriteByte('%')
+			_ = b.WriteByte(upperHex[c>>4])
+			_ = b.WriteByte(upperHex[c&0x0F])
 		}
 	}
 	return b.String()

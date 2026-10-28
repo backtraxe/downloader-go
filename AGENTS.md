@@ -11,6 +11,7 @@ internal/config        config.json 加载与旧 telegram.json 兼容
 internal/logging       请求级 [rXXXX] 日志
 internal/result        Status / Result / Post 契约
 internal/sites         URL→站点名、Cookie 文件定位
+internal/urlutil       链接提取、URL 归一化、短链展开
 internal/cookies       Cookie 格式识别、导入、体检
 internal/fsutil        文件名清洗、原子去重、.part 原子替换、目录构造
 internal/media         扩展名推断、图片尺寸、装饰图判定
@@ -45,7 +46,7 @@ bash -n install_termux.sh
 ```
 
 单元测试必须离线：使用 `httptest.Server` 与 `testdata/` 中的脱敏 fixture，
-不访问真实站点。可选 `-tags=integration` 的真实网络冒烟不进 CI。
+不访问真实站点。
 
 ## 关键约束
 

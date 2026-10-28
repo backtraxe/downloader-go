@@ -74,7 +74,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			slog.Warn("getUpdates 失败，稍后重试", "error", err)
+			slog.WarnContext(ctx, "getUpdates 失败，稍后重试", "error", err)
 			select {
 			case <-ctx.Done():
 				return nil
@@ -95,7 +95,7 @@ func (b *Bot) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return nil
 				}
-				slog.Warn("处理消息失败", "error", err)
+				slog.WarnContext(ctx, "处理消息失败", "error", err)
 			}
 		}
 	}
@@ -145,6 +145,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 	for _, link := range urls {
 		// 单条链接 = 一个请求：下载与上传日志共享同一 [rXXXX] ID。
 		reqCtx, _ := logging.WithRequest(ctx)
+		slog.InfoContext(reqCtx, "收到链接", "link", link)
 		if err := b.reply(reqCtx, chatID, "开始下载："+link); err != nil {
 			return err
 		}
@@ -156,6 +157,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 			if detail == "" {
 				detail = "未知原因"
 			}
+			slog.WarnContext(reqCtx, "下载失败", "error", detail)
 			if err := b.reply(reqCtx, chatID, "下载失败："+detail); err != nil {
 				return err
 			}
@@ -183,7 +185,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 			continue
 		}
 
-		sent, skipped := 0, 0
+		sent := 0
+		var skippedPaths []string
 		for _, post := range res.Posts {
 			n, skippedFiles, err := b.Uploader.Send(reqCtx, chatID, post)
 			if err != nil {
@@ -193,18 +196,28 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 				continue
 			}
 			sent += n
-			skipped += len(skippedFiles)
+			skippedPaths = append(skippedPaths, skippedFiles...)
 		}
 
 		completion := fmt.Sprintf("完成：%d 项已回传", sent)
-		if skipped > 0 {
-			completion += fmt.Sprintf("，%d 项超限跳过", skipped)
+		if len(skippedPaths) > 0 {
+			completion += fmt.Sprintf("，%d 项超限跳过", len(skippedPaths))
 		}
 		if (res.Status == result.Partial || res.Status == result.Failed) && res.Message != "" {
 			completion += "（" + res.Message + "）"
 		}
 		if err := b.reply(reqCtx, chatID, completion); err != nil {
 			return err
+		}
+		// 跳过项逐个列出本地路径，方便用户手动搬运；每条占一行。
+		if len(skippedPaths) > 0 {
+			lines := make([]string, 0, len(skippedPaths))
+			for _, path := range skippedPaths {
+				lines = append(lines, "超 50MB 已跳过（文件在 "+path+"）")
+			}
+			if err := b.reply(reqCtx, chatID, strings.Join(lines, "\n")); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -235,7 +248,7 @@ func (b *Bot) reply(ctx context.Context, chatID, text string) error {
 		defer cancel()
 		// 删除失败只影响清理（频道内可能没有删除权限），不改变处理结果。
 		if err := b.API.DeleteMessage(deleteCtx, chatID, msg.MessageID); err != nil {
-			slog.Warn("删除过程消息失败", "error", err)
+			slog.WarnContext(ctx, "删除过程消息失败", "error", err)
 		}
 	})
 	return nil

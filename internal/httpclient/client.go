@@ -20,6 +20,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -261,10 +262,18 @@ func (c *Client) Get(ctx context.Context, req Request) (*Response, error) {
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL
 	}
+
+	// HTTP/2 由 transport 的 ReadIdleTimeout 负责；HTTP/1.1 与明文连接没有
+	// 等价机制，服务端可以在发完响应头后无限期停住，卡死串行 bot。这里按
+	// 读取空闲时间（不是总时长）兜底，媒体下载因此没有总时长上限。
+	body := resp.Body
+	if resp.ProtoMajor != 2 {
+		body = newIdleTimeoutBody(body, c.opts.Timeouts.Idle)
+	}
 	return &Response{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
-		Body:       &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel},
+		Body:       &cancelOnCloseBody{ReadCloser: body, cancel: cancel},
 		URL:        finalURL,
 	}, nil
 }
@@ -280,6 +289,82 @@ func (b *cancelOnCloseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
+}
+
+// errReadIdleTimeout 表示响应体在限定时间内没有读到任何数据。
+var errReadIdleTimeout = errors.New("httpclient: body read idle timeout")
+
+// idleTimeoutBody 为响应体增加“读取空闲超时”：每次 Read 开始前重置计时器，
+// 超时后关闭底层 body，从而唤醒被阻塞的 Read。
+//
+// 计时器按单次 Read 的空闲时间计算，不是整个响应的总时长；持续有数据
+// 到达的媒体下载不会因此被中断。
+type idleTimeoutBody struct {
+	rc       io.ReadCloser
+	idle     time.Duration
+	timer    *time.Timer
+	mu       sync.Mutex
+	timedOut bool
+	closed   bool
+}
+
+// newIdleTimeoutBody 包装 rc；idle <= 0 或 rc 为空时原样返回。
+func newIdleTimeoutBody(rc io.ReadCloser, idle time.Duration) io.ReadCloser {
+	if rc == nil || idle <= 0 {
+		return rc
+	}
+	b := &idleTimeoutBody{rc: rc, idle: idle}
+	b.timer = time.AfterFunc(idle, b.onTimeout)
+	return b
+}
+
+// onTimeout 标记超时并关闭底层连接，使阻塞中的 Read 立即返回。
+func (b *idleTimeoutBody) onTimeout() {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.timedOut = true
+	b.mu.Unlock()
+	_ = b.rc.Close()
+}
+
+// Read 在每次读取前重置空闲计时器，超时后返回 errReadIdleTimeout。
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return 0, errReadIdleTimeout
+	}
+	b.timer.Reset(b.idle)
+	b.mu.Unlock()
+
+	n, err := b.rc.Read(p)
+
+	b.mu.Lock()
+	timedOut := b.timedOut
+	if !timedOut && !b.closed {
+		b.timer.Reset(b.idle)
+	}
+	b.mu.Unlock()
+	if timedOut {
+		return n, errReadIdleTimeout
+	}
+	return n, err
+}
+
+// Close 停止计时器并关闭底层 body；可重复调用。
+func (b *idleTimeoutBody) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	b.timer.Stop()
+	b.mu.Unlock()
+	return b.rc.Close()
 }
 
 // parseProxy 解析代理地址；缺少 scheme 时按 http:// 补全。

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -153,8 +154,14 @@ func Load(opts LoadOptions) (*Config, error) {
 }
 
 // WriteTemplate 在 path 写入配置模板。文件已存在时不做任何修改，
-// 绝不覆盖用户已有配置。
+// 绝不覆盖用户已有配置。父目录不存在时按 0700 创建，使
+// `--data-dir` 指向新目录时也能直接生成模板。
 func WriteTemplate(path string) error {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("创建配置目录 %s: %w", dir, err)
+		}
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {

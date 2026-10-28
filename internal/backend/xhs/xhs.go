@@ -89,7 +89,19 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 		return failed("链接必须带 xsec_token（请在 App 内重新分享该笔记获取完整链接）")
 	}
 
-	body, finalURL, status, err := d.fetchPage(ctx, rawURL, cookie)
+	// 短链分两步抓取：Go 的 http.Client 在重定向跨域名时会丢弃手动设置的
+	// Cookie 头，若在 302 请求上直接带 Cookie，最终笔记页拿不到登录态。
+	// 先不带 Cookie 解析出最终 URL，再带 Cookie 请求一次。
+	pageURL := rawURL
+	if !isDirectNoteURL(rawURL) {
+		resolved, err := d.resolveShortLink(ctx, rawURL)
+		if err != nil {
+			return failed("请求失败（网络异常或 Cookie/风控问题）")
+		}
+		pageURL = resolved
+	}
+
+	body, finalURL, status, err := d.fetchPage(ctx, pageURL, cookie)
 	if err != nil {
 		return failed("请求失败（网络异常或 Cookie/风控问题）")
 	}
@@ -158,6 +170,41 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 		Files:  files,
 	}}
 	return res
+}
+
+// resolveShortLink 不带 Cookie 请求短链，跟随重定向后返回最终 URL。
+//
+// 只看最终地址，不读取响应体：页面内容随后带着 Cookie 再请求一次。
+// 瞬时网络错误与 429/5xx 按 pageBackoff 重试，策略与 fetchPage 一致。
+func (d *Downloader) resolveShortLink(ctx context.Context, rawURL string) (string, error) {
+	var lastErr error
+	status := 0
+	for attempt := 0; attempt < pageAttempts; attempt++ {
+		resp, err := d.HTTP.Get(ctx, httpclient.Request{
+			URL:    ensureHTTPS(rawURL),
+			Header: pageHeaders(),
+		})
+		if err != nil {
+			lastErr = err
+			if d.canRetry(ctx, attempt) && httpclient.IsTransient(err) {
+				time.Sleep(backoffFor(attempt))
+				continue
+			}
+			return "", err
+		}
+		status = resp.StatusCode
+		finalURL := rawURL
+		if resp.URL != nil && resp.URL.String() != "" {
+			finalURL = resp.URL.String()
+		}
+		_ = resp.Close()
+		if d.canRetry(ctx, attempt) && httpclient.IsTransientStatus(status) {
+			time.Sleep(backoffFor(attempt))
+			continue
+		}
+		return finalURL, nil
+	}
+	return "", lastErr
 }
 
 // fetchPage 请求笔记页并跟随重定向，返回响应体、最终 URL 与状态码。

@@ -213,6 +213,44 @@ func TestGetForceHTTP1(t *testing.T) {
 	}
 }
 
+// TestReadIdleTimeoutOnHTTP1 验证 HTTP/1.1 响应体在服务端发完响应头后
+// 停住时，客户端会在读取空闲超时内返回错误，而不是永久阻塞。
+func TestReadIdleTimeoutOnHTTP1(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	c := New(Options{
+		Profile: Chrome120,
+		Timeouts: Timeouts{
+			Dial:   time.Second,
+			TLS:    time.Second,
+			Header: time.Second,
+			Idle:   100 * time.Millisecond,
+		},
+	})
+	resp, err := c.Get(context.Background(), Request{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Close()
+
+	start := time.Now()
+	if _, err := resp.ReadAll(0); err == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("idle timeout took %s", elapsed)
+	}
+}
+
 func TestGetHeaderTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)

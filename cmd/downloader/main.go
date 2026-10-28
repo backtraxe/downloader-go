@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/backtraxe/downloader-go/internal/config"
 	"github.com/backtraxe/downloader-go/internal/dispatch"
 	"github.com/backtraxe/downloader-go/internal/httpclient"
+	"github.com/backtraxe/downloader-go/internal/logging"
 	"github.com/backtraxe/downloader-go/internal/result"
 	"github.com/backtraxe/downloader-go/internal/telegram"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
@@ -28,9 +30,15 @@ import (
 // 版本信息，发布时通过 -ldflags "-X main.version=..." 注入。
 var version, commit, date = "dev", "none", "unknown"
 
-// telegramRequestTimeout 限制单次 Telegram HTTP 请求（含媒体上传），
-// 避免半开连接让机器人永久阻塞。
-const telegramRequestTimeout = 60 * time.Second
+const (
+	// telegramRequestTimeout 是文字类 Telegram 请求的上限（发消息、删除），
+	// 避免半开连接让机器人永久阻塞。
+	telegramRequestTimeout = 60 * time.Second
+	// telegramMediaTimeout 是 HTTP 客户端的整体上限，按媒体上传设置：49MB
+	// 在移动上行可能远超 60 秒。文字请求由各自的 60s context 收紧，长轮询
+	// 仍保持 40s，因此放宽客户端超时不会拖长它们的等待。
+	telegramMediaTimeout = 10 * time.Minute
+)
 
 // dependencies 汇总命令依赖，测试可注入替身。
 type dependencies struct {
@@ -40,6 +48,9 @@ type dependencies struct {
 }
 
 func main() {
+	// 安装带请求作用域的默认 logger，让每条链接的 [rXXXX] 前缀真正出现在
+	// 生产日志里；bot 常驻与 CLI 共用同一条 stderr 通道。
+	slog.SetDefault(logging.New(os.Stderr, slog.LevelInfo))
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
@@ -202,9 +213,12 @@ func telegramConfigured(cfg *config.Telegram) bool {
 }
 
 // newTelegramAPI 构造带请求超时的 Bot API 客户端。
+//
+// 客户端超时按媒体上传放宽到 10 分钟；文字调用的 60s 上限由调用方
+// context 保证，二者互不替代。
 func newTelegramAPI(token string) *tgapi.Client {
 	api := tgapi.New(token)
-	api.HTTP = &http.Client{Timeout: telegramRequestTimeout}
+	api.HTTP = &http.Client{Timeout: telegramMediaTimeout}
 	return api
 }
 
@@ -223,6 +237,13 @@ func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context
 		fmt.Fprintln(stderr, "下载分发未配置")
 		return 1
 	}
+
+	// 启动行只包含非敏感信息：数据目录、白名单人数与过程消息 TTL。
+	slog.Info("机器人启动",
+		"data_dir", dataDir,
+		"allowed_users", len(cfg.AllowedUsers),
+		"ttl_seconds", cfg.TTL(),
+	)
 
 	api := newTelegramAPI(cfg.BotToken)
 	bot := &telegram.Bot{

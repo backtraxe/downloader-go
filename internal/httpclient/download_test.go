@@ -40,7 +40,7 @@ func TestDownloadRetriesTransient(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&hits, 1) == 1 {
-			http.Error(w, "boom", 503)
+			http.Error(w, "boom", http.StatusServiceUnavailable)
 			return
 		}
 		w.Write([]byte("DATA"))
@@ -188,7 +188,7 @@ func TestDownloadFilterAbortsWithoutRetry(t *testing.T) {
 
 func TestDownloadForceFailureKeepsTargetAndRemovesPart(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", 503)
+		http.Error(w, "boom", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 	p := filepath.Join(t.TempDir(), "001.jpg")
@@ -215,7 +215,7 @@ func TestDownloadOnRetryCalled(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&hits, 1) == 1 {
-			http.Error(w, "boom", 503)
+			http.Error(w, "boom", http.StatusServiceUnavailable)
 			return
 		}
 		w.Write([]byte("DATA"))

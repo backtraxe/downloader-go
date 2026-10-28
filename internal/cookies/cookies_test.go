@@ -86,6 +86,32 @@ func TestImportPerSiteFormat(t *testing.T) {
 	}
 }
 
+// TestImportXiaohongshuAcceptsRednote 验证小红书导入同时接受国内版
+// xiaohongshu.com 与国际版 rednote.com 的 cookie，第三方域仍然丢弃。
+func TestImportXiaohongshuAcceptsRednote(t *testing.T) {
+	dir := t.TempDir()
+	raw := `[
+		{"name":"a1","value":"abc","domain":".xiaohongshu.com"},
+		{"name":"web_session","value":"ws","domain":".rednote.com"},
+		{"name":"third","value":"x","domain":".evil.com"}
+	]`
+	path, err := Import(dir, "xiaohongshu", strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "a1=abc") || !strings.Contains(content, "web_session=ws") {
+		t.Fatalf("missing accepted cookies: %s", content)
+	}
+	if strings.Contains(content, "third=") {
+		t.Fatalf("third-party cookie kept: %s", content)
+	}
+}
+
 func TestDetectFormats(t *testing.T) {
 	cases := []struct {
 		name string
@@ -314,6 +340,36 @@ func TestCheckXiaohongshu(t *testing.T) {
 	// 长度恰好 30 位视为足量；29 位算缺口。
 	if issues := Check("a1="+a1[:xhsA1MinLen-1]+"; web_session=s", "xiaohongshu"); len(issues) != 1 || issues[0].Key != "a1" {
 		t.Fatalf("29-char a1 issues = %+v", issues)
+	}
+}
+
+// TestHTTPOnlyNetscapeRowsAreData 验证浏览器/yt-dlp 导出的
+// `#HttpOnly_` 行被当作数据而不是注释：丢掉的往往是登录态本身。
+func TestHTTPOnlyNetscapeRowsAreData(t *testing.T) {
+	text := strings.Join([]string{
+		"# Netscape HTTP Cookie File",
+		"#HttpOnly_.douyin.com\tTRUE\t/\tTRUE\t4070908800\tttwid\tt1",
+		".douyin.com\tTRUE\t/\tTRUE\t4070908800\tUIFID\tu1",
+	}, "\n")
+
+	if got := Detect(text); got != Netscape {
+		t.Fatalf("Detect = %v, want Netscape", got)
+	}
+
+	m, format, err := ParseMap(text)
+	if err != nil || format != Netscape {
+		t.Fatalf("format=%v err=%v", format, err)
+	}
+	if m["ttwid"] != "t1" || m["UIFID"] != "u1" {
+		t.Fatalf("map=%v", m)
+	}
+
+	if got := ToHeader(text); got != "ttwid=t1; UIFID=u1" {
+		t.Fatalf("ToHeader = %q", got)
+	}
+
+	if issues := Check(text, "douyin"); len(issues) != 0 {
+		t.Fatalf("HttpOnly ttwid should satisfy the gate: %+v", issues)
 	}
 }
 

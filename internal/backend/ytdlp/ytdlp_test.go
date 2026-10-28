@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDownloadProbesThenDownloads(t *testing.T) {
@@ -181,6 +182,44 @@ func TestRelativeOutputResolvedAgainstCwd(t *testing.T) {
 	res := d.Download(context.Background(), "https://youtu.be/x", false)
 	if res.Status != "downloaded" || len(res.Posts[0].Files) != 1 || res.Posts[0].Files[0] != filepath.Join(dir, "rel.mp4") {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// TestRepeatLinkSkipsPreexistingFile 验证重复链接：yt-dlp 打印的是旧文件
+// 路径时返回 Skipped 且不带 Files；--force 仍然重新下载。
+func TestRepeatLinkSkipsPreexistingFile(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "download", "youtube", "u", "t.mp4")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, []byte("v"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(out, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := newTestDownloader(t, dir, `{"title":"t","uploader":"u","ext":"mp4"}`, out+"\n")
+	res := d.Download(context.Background(), "https://youtu.be/x", false)
+	if res.Status != "skipped" {
+		t.Fatalf("status=%s message=%s", res.Status, res.Message)
+	}
+	if len(res.Posts) != 1 {
+		t.Fatalf("posts=%+v", res.Posts)
+	}
+	post := res.Posts[0]
+	if post.Status != "skipped" || post.Title != "t" || post.Author != "u" {
+		t.Fatalf("post=%+v", post)
+	}
+	if len(post.Files) != 0 {
+		t.Fatalf("skipped post must not carry files: %v", post.Files)
+	}
+
+	res = d.Download(context.Background(), "https://youtu.be/x", true)
+	if res.Status != "downloaded" || len(res.Posts) != 1 || len(res.Posts[0].Files) != 1 {
+		t.Fatalf("force should download: %+v", res)
 	}
 }
 

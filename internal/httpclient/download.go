@@ -222,7 +222,8 @@ func IsTransient(err error) bool {
 	}
 
 	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) && dnsErr.Temporary() {
+	// Temporary() 已废弃；等价地直接看结构体上的 IsTimeout / IsTemporary。
+	if errors.As(err, &dnsErr) && (dnsErr.IsTimeout || dnsErr.IsTemporary) {
 		return true
 	}
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {

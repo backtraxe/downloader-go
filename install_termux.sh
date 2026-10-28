@@ -7,6 +7,8 @@ REPO="backtraxe/downloader-go"
 BASE_URL="https://github.com/${REPO}/releases"
 DATA_DIR=""
 MIGRATE_FROM=""
+DATA_DIR_SET=0
+MIGRATE_FROM_SET=0
 
 usage() {
   cat <<'EOF'
@@ -36,19 +38,23 @@ while [ $# -gt 0 ]; do
     --data-dir)
       [ $# -ge 2 ] || die "--data-dir 缺少参数"
       DATA_DIR="$2"
+      DATA_DIR_SET=1
       shift 2
       ;;
     --data-dir=*)
       DATA_DIR="${1#*=}"
+      DATA_DIR_SET=1
       shift
       ;;
     --migrate-from)
       [ $# -ge 2 ] || die "--migrate-from 缺少参数"
       MIGRATE_FROM="$2"
+      MIGRATE_FROM_SET=1
       shift 2
       ;;
     --migrate-from=*)
       MIGRATE_FROM="${1#*=}"
+      MIGRATE_FROM_SET=1
       shift
       ;;
     -h | --help)
@@ -60,6 +66,22 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# 显式传入但值为空也算参数错误：空目录会被当成当前目录，后续写 rc 文件
+# 时还会产生错误的 DOWNLOADER_HOME。
+if [ "$DATA_DIR_SET" -eq 1 ] && [ -z "$DATA_DIR" ]; then
+  die "--data-dir 不能为空。"
+fi
+if [ "$MIGRATE_FROM_SET" -eq 1 ] && [ -z "$MIGRATE_FROM" ]; then
+  die "--migrate-from 不能为空。"
+fi
+
+# 换行会破坏 rc 文件里的单行 export，直接拒绝而不是尝试转义。
+case "$DATA_DIR" in
+  *$'\n'* | *$'\r'*)
+    die "--data-dir 不能包含换行符。"
+    ;;
+esac
 
 # Termux 的 PREFIX 形如 /data/data/com.termux/files/usr。
 if [ -z "${PREFIX:-}" ]; then
@@ -170,40 +192,43 @@ fi
 
 if [ -n "$MIGRATE_FROM" ]; then
   OLD_DIR="$(cd "$MIGRATE_FROM" && pwd -P)"
-  [ "$OLD_DIR" != "$DATA_DIR" ] || die "新旧数据目录相同，无需迁移。"
-
-  mkdir -p "$DATA_DIR/cookies"
-  if [ -d "$OLD_DIR/cookies" ]; then
-    for src in "$OLD_DIR"/cookies/*; do
-      [ -e "$src" ] || continue
-      name="$(basename "$src")"
-      if [ -e "$DATA_DIR/cookies/$name" ]; then
-        log "跳过已存在的 cookies/$name"
-      else
-        cp -R "$src" "$DATA_DIR/cookies/$name"
-        log "已复制 cookies/$name"
-      fi
-    done
-  fi
-
-  if [ -f "$OLD_DIR/config.json" ]; then
-    if [ -e "$DATA_DIR/config.json" ]; then
-      log "跳过已存在的 config.json"
-    else
-      cp "$OLD_DIR/config.json" "$DATA_DIR/config.json"
-      log "已复制 config.json"
-    fi
-  fi
-
-  if [ ! -e "$DATA_DIR/download" ] && [ ! -L "$DATA_DIR/download" ]; then
-    if [ -d "$OLD_DIR/download" ]; then
-      ln -s "$OLD_DIR/download" "$DATA_DIR/download"
-      log "已创建符号链接 download/ -> $OLD_DIR/download"
-    else
-      log "旧目录没有 download/，跳过符号链接。"
-    fi
+  if [ "$OLD_DIR" = "$DATA_DIR" ]; then
+    # 同目录迁移是幂等空操作：安装本身已经成功，不应以非零码退出。
+    log "新旧数据目录相同，跳过迁移。"
   else
-    log "新数据目录已有 download/，跳过符号链接。"
+    mkdir -p "$DATA_DIR/cookies"
+    if [ -d "$OLD_DIR/cookies" ]; then
+      for src in "$OLD_DIR"/cookies/*; do
+        [ -e "$src" ] || continue
+        name="$(basename "$src")"
+        if [ -e "$DATA_DIR/cookies/$name" ]; then
+          log "跳过已存在的 cookies/$name"
+        else
+          cp -R "$src" "$DATA_DIR/cookies/$name"
+          log "已复制 cookies/$name"
+        fi
+      done
+    fi
+
+    if [ -f "$OLD_DIR/config.json" ]; then
+      if [ -e "$DATA_DIR/config.json" ]; then
+        log "跳过已存在的 config.json"
+      else
+        cp "$OLD_DIR/config.json" "$DATA_DIR/config.json"
+        log "已复制 config.json"
+      fi
+    fi
+
+    if [ ! -e "$DATA_DIR/download" ] && [ ! -L "$DATA_DIR/download" ]; then
+      if [ -d "$OLD_DIR/download" ]; then
+        ln -s "$OLD_DIR/download" "$DATA_DIR/download"
+        log "已创建符号链接 download/ -> $OLD_DIR/download"
+      else
+        log "旧目录没有 download/，跳过符号链接。"
+      fi
+    else
+      log "新数据目录已有 download/，跳过符号链接。"
+    fi
   fi
 fi
 

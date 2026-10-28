@@ -174,6 +174,26 @@ func TestWriteTemplateDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+// TestWriteTemplateCreatesParentDir 验证 --data-dir 指向尚不存在的目录时，
+// 模板写入会一并创建父目录。
+func TestWriteTemplateCreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "newdata", "nested", "config.json")
+	if err := WriteTemplate(path); err != nil {
+		t.Fatalf("WriteTemplate: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("template missing: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("perm=%o want 600", perm)
+	}
+	if _, err := Load(LoadOptions{Path: path}); err != nil {
+		t.Fatalf("template not loadable: %v", err)
+	}
+}
+
 func TestTemplateIsLoadable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

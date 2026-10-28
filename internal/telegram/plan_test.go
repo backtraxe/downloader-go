@@ -1,6 +1,10 @@
 package telegram
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestCaptionAndTag(t *testing.T) {
 	if got := BuildCaption("douyin", "作者 甲", "标题"); got != "#作者_甲 #douyin\n标题" {
@@ -42,6 +46,26 @@ func TestBuildCaptionOmitsEmptyTags(t *testing.T) {
 		if got := BuildCaption(tc.site, tc.author, tc.title); got != tc.want {
 			t.Errorf("BuildCaption(%q,%q,%q)=%q want %q", tc.site, tc.author, tc.title, got, tc.want)
 		}
+	}
+}
+
+// TestBuildCaptionTruncatesOnRuneBoundary 验证 caption 在 1024 个 rune 处
+// 截断，且不会把多字节 UTF-8 字符切成半个。
+func TestBuildCaptionTruncatesOnRuneBoundary(t *testing.T) {
+	title := strings.Repeat("界", maxCaptionRunes+100)
+	got := BuildCaption("douyin", "作者", title)
+	if n := utf8.RuneCountInString(got); n != maxCaptionRunes {
+		t.Fatalf("rune count=%d want %d", n, maxCaptionRunes)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("truncated caption is not valid UTF-8")
+	}
+	if !strings.HasPrefix(got, "#作者 #douyin\n界") {
+		t.Fatalf("caption prefix lost: %q", string([]rune(got)[:12]))
+	}
+
+	if got := BuildCaption("", "", "标题"); got != "标题" {
+		t.Fatalf("short caption changed: %q", got)
 	}
 }
 

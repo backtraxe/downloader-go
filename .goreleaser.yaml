@@ -24,6 +24,7 @@ archives:
       - README.md
       - LICENSE
       - NOTICE
+      - internal/douyinsign/LICENSE.apache
 
 checksum:
   name_template: checksums.txt

@@ -288,7 +288,7 @@ func encodeBase64(data []byte, alphabet string) string {
 		block <<= 8 * (3 - len(chunk))
 		digits := [4]int{(block >> 18) & 0x3F, (block >> 12) & 0x3F, (block >> 6) & 0x3F, block & 0x3F}
 		for _, digit := range digits[:len(chunk)+1] {
-			out.WriteByte(alphabet[digit])
+			_ = out.WriteByte(alphabet[digit])
 		}
 	}
 	text := out.String()

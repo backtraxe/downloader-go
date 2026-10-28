@@ -403,8 +403,7 @@ func TestDownloadNoteJSVMFails(t *testing.T) {
 	oldBase := detailAPIBase
 	defer func() { detailAPIBase = oldBase }()
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/note/7666381907030529443":
 			fmt.Fprint(w, jsvmPage)
@@ -475,8 +474,7 @@ func TestDownloadNoteJSVMFailsWhenDetailAlsoFails(t *testing.T) {
 	defer func() { detailAPIBase = oldBase }()
 
 	var detailHits int32
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/note/7666381907030529443":
 			fmt.Fprint(w, jsvmPage)
@@ -507,8 +505,7 @@ func TestDownloadNoteCaptchaFails(t *testing.T) {
 	oldBase := detailAPIBase
 	defer func() { detailAPIBase = oldBase }()
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/note/7666381907030529443":
 			fmt.Fprint(w, `<html><head><title>验证码中间页</title></head><body></body></html>`)

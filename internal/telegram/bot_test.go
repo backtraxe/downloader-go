@@ -351,6 +351,44 @@ func TestHandleMessagePartialAppendsDetail(t *testing.T) {
 	}
 }
 
+// TestHandleMessageReportsSkippedPaths 验证超限跳过的本地路径逐条回显，
+// 而不仅是一个计数。
+func TestHandleMessageReportsSkippedPaths(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.bin")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxUploadBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(context.Context, string, bool) result.Result {
+		return result.Result{
+			Status: result.Downloaded,
+			Posts:  []result.Post{{Title: "超限", Files: []string{big}}},
+		}
+	})
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "https://example.com/x")); err != nil {
+		t.Fatal(err)
+	}
+	replies := strings.Join(rec.replies(), "\n")
+	if !strings.Contains(replies, "1 项超限跳过") {
+		t.Fatalf("missing skip count: %q", replies)
+	}
+	if !strings.Contains(replies, big) {
+		t.Fatalf("missing skipped path: %q", replies)
+	}
+	if rec.uploadedCount() != 0 {
+		t.Fatalf("oversized file must not be uploaded: %d", rec.uploadedCount())
+	}
+}
+
 func TestHandleMessageSchedulesDeletionForTextOnly(t *testing.T) {
 	rec := &fakeTelegram{}
 	timers := &timerRecorder{}

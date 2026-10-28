@@ -295,6 +295,55 @@ func TestShortLinkResolvesToNote(t *testing.T) {
 	}
 }
 
+// TestShortLinkAcrossHostsCarriesCookie 复现 Go 在跨域名重定向时丢弃
+// 手动 Cookie 头的行为：短链必须先不带 Cookie 解析到最终地址，随后
+// 笔记页请求再带上用户 Cookie。
+func TestShortLinkAcrossHostsCarriesCookie(t *testing.T) {
+	var shortCookie, noteCookie string
+	var serverURL string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/short/note", func(w http.ResponseWriter, r *http.Request) {
+		shortCookie = r.Header.Get("Cookie")
+		// 用另一个 host 名指向同一监听端口，制造跨域名重定向。
+		target := strings.Replace(serverURL, "127.0.0.1", "localhost", 1) +
+			"/explore/note1?xsec_token=fromshort"
+		http.Redirect(w, r, target, http.StatusFound)
+	})
+	mux.HandleFunc("/explore/note1", func(w http.ResponseWriter, r *http.Request) {
+		noteCookie = r.Header.Get("Cookie")
+		state := map[string]any{"note": map[string]any{"noteDetailMap": map[string]any{
+			"note1": map[string]any{"note": map[string]any{
+				"noteId": "note1",
+				"title":  "跨域",
+				"user":   map[string]any{"nickname": "作者"},
+				"imageList": []any{
+					map[string]any{"urlDefault": serverURL + "/img/1"},
+				},
+			}},
+		}}}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, pageHTML(t, state))
+	})
+	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) {
+		writePNG(t, w)
+	})
+	server := newTLSServer(t, mux)
+	serverURL = server.URL
+
+	d := newTestDownloader(t)
+	res := d.Download(context.Background(), serverURL+"/short/note", "a1=abc", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status=%s message=%s", res.Status, res.Message)
+	}
+	if shortCookie != "" {
+		t.Fatalf("short-link request must not carry cookies, got %q", shortCookie)
+	}
+	if !strings.Contains(noteCookie, "a1=abc") {
+		t.Fatalf("final note request missing cookie: %q", noteCookie)
+	}
+}
+
 func TestExpiredShortLinkMessage(t *testing.T) {
 	server := newXSHSite(t)
 

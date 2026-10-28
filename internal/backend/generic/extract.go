@@ -97,10 +97,10 @@ func ExtractCandidates(doc *goquery.Document, pageURL string) []Candidate {
 	})
 
 	// 2. 包裹媒体直链的 A 标签。只看路径后缀，避免 ?image=foo.jpg 这类
-	//    查询参数被误判。
+	//    查询参数被误判；同时排除 MediaWiki 文件页等“长得像媒体”的页面。
 	doc.Find("a[href]").Each(func(_ int, tag *goquery.Selection) {
 		href, _ := tag.Attr("href")
-		if !hasMediaPath(href) {
+		if !hasMediaPath(href) || isPageLikeHref(href) {
 			return
 		}
 		add(href, "a")
@@ -176,6 +176,32 @@ func hasMediaPath(href string) bool {
 	pathPart = strings.ToLower(pathPart)
 	for _, ext := range mediaAnchorExtensions {
 		if strings.HasSuffix(pathPart, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPageLikeHref 判断 href 是否更像“页面”而不是媒体直链。
+//
+// MediaWiki 的 /wiki/File:Example.jpg、/w/index.php?title=...，
+// 以及带 title=/returnto= 参数的详情页都会以媒体后缀结尾，直接下载只会
+// 得到一段 HTML。命中的候选一律丢弃，避免变成 Partial 失败。
+func isPageLikeHref(href string) bool {
+	u, err := url.Parse(strings.TrimSpace(href))
+	if err != nil {
+		return false
+	}
+	loweredPath := strings.ToLower(u.Path)
+	if strings.Contains(loweredPath, "/wiki/") || strings.Contains(loweredPath, "/w/index.php") {
+		return true
+	}
+	if strings.Contains(path.Base(loweredPath), ":") {
+		return true
+	}
+	for key := range u.Query() {
+		switch strings.ToLower(key) {
+		case "title", "returnto":
 			return true
 		}
 	}

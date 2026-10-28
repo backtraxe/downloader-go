@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 
 	"github.com/backtraxe/downloader-go/internal/cookies"
@@ -69,7 +70,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, rawURL string, force bool) re
 		return result.Result{Status: result.Failed, Message: "分发器未配置"}
 	}
 
-	switch site := sites.Detect(rawURL); site {
+	site := sites.Detect(rawURL)
+	slog.InfoContext(ctx, "开始处理链接", "site", site, "force", force)
+	res := d.dispatchSite(ctx, site, rawURL, force)
+	slog.InfoContext(ctx, "链接处理结束", "site", site, "status", res.Status)
+	return res
+}
+
+// dispatchSite 按站点调用对应后端。日志与请求作用域由 Dispatch 统一负责。
+func (d *Dispatcher) dispatchSite(ctx context.Context, site, rawURL string, force bool) result.Result {
+	switch site {
 	case "xiaohongshu":
 		if d.Handlers.XHS == nil {
 			return notWired("小红书")

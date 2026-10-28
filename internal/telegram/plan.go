@@ -54,12 +54,12 @@ func MakeTag(text string) string {
 	inSeparator := false
 	for _, r := range text {
 		if isTagRune(r) {
-			b.WriteRune(r)
+			_, _ = b.WriteRune(r)
 			inSeparator = false
 			continue
 		}
 		if b.Len() > 0 && !inSeparator {
-			b.WriteByte('_')
+			_ = b.WriteByte('_')
 			inSeparator = true
 		}
 	}
@@ -79,9 +79,13 @@ func isTagRune(r rune) bool {
 	return r >= '一' && r <= '鿿'
 }
 
+// maxCaptionRunes 是 Telegram caption 的字符上限（按 rune 计）。
+const maxCaptionRunes = 1024
+
 // BuildCaption 生成媒体说明：先 #作者 #站点，再换行接标题。
 //
-// 空标签省略；没有任何标签时只返回标题，避免出现前导换行。
+// 空标签省略；没有任何标签时只返回标题，避免出现前导换行。结果超过
+// Telegram 的 1024 字符上限时按 rune 边界截断，不会切坏 UTF-8。
 func BuildCaption(site, author, title string) string {
 	tags := make([]string, 0, 2)
 	if tag := MakeTag(author); tag != "" {
@@ -90,13 +94,26 @@ func BuildCaption(site, author, title string) string {
 	if tag := MakeTag(site); tag != "" {
 		tags = append(tags, tag)
 	}
-	if len(tags) == 0 {
-		return title
+
+	caption := title
+	if len(tags) > 0 {
+		joined := strings.Join(tags, " ")
+		if title == "" {
+			caption = joined
+		} else {
+			caption = joined + "\n" + title
+		}
 	}
-	if title == "" {
-		return strings.Join(tags, " ")
+	return truncateCaption(caption)
+}
+
+// truncateCaption 按 rune 边界把 caption 截到 maxCaptionRunes。
+func truncateCaption(caption string) string {
+	runes := []rune(caption)
+	if len(runes) <= maxCaptionRunes {
+		return caption
 	}
-	return strings.Join(tags, " ") + "\n" + title
+	return string(runes[:maxCaptionRunes])
 }
 
 // PlanGroups 把可进相册的 Photo/Video 按输入顺序切成每组至多 max 项。

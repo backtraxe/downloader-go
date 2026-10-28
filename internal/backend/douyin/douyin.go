@@ -616,9 +616,9 @@ func msToken(jar map[string]string, rng douyinsign.RNG) string {
 		if position < 0 {
 			position = 0
 		}
-		b.WriteByte(msTokenAlphabet[position])
+		_ = b.WriteByte(msTokenAlphabet[position])
 	}
-	b.WriteString("==")
+	_, _ = b.WriteString("==")
 	return b.String()
 }
 

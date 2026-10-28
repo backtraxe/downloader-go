@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/backtraxe/downloader-go/internal/result"
 )
@@ -111,6 +112,21 @@ func TestParseUploadArgs(t *testing.T) {
 		if err != nil || path != tt.path || caption != tt.caption {
 			t.Fatalf("args=%v: path=%q caption=%q err=%v", tt.args, path, caption, err)
 		}
+	}
+}
+
+// TestTelegramMediaTimeout 确认共享 HTTP 客户端按媒体上传放宽超时，
+// 文字调用仍由各自 60s 的 context 收紧。
+func TestTelegramMediaTimeout(t *testing.T) {
+	if telegramMediaTimeout <= telegramRequestTimeout {
+		t.Fatalf("media timeout %s must exceed text timeout %s", telegramMediaTimeout, telegramRequestTimeout)
+	}
+	api := newTelegramAPI("token")
+	if api.HTTP == nil || api.HTTP.Timeout != telegramMediaTimeout {
+		t.Fatalf("api timeout=%v want %v", api.HTTP.Timeout, telegramMediaTimeout)
+	}
+	if telegramMediaTimeout != 10*time.Minute {
+		t.Fatalf("media timeout=%s want 10m", telegramMediaTimeout)
 	}
 }
 

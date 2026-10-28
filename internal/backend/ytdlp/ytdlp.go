@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/backtraxe/downloader-go/internal/fsutil"
 	"github.com/backtraxe/downloader-go/internal/result"
@@ -55,9 +56,15 @@ type probeInfo struct {
 	Ext      string `json:"ext"`
 }
 
+// mtimeGuard 吸收文件系统时间戳精度（部分文件系统只有秒级），避免刚写入
+// 的文件因为 mtime 被截断而误判为“早于下载开始”。
+const mtimeGuard = 2 * time.Second
+
 // Download 先探测元数据拿作者，再下载并返回实际写入的文件路径。
 //
-// force=true 时追加 --force-overwrites 覆盖已存在文件。多次输出（如分片
+// force=true 时追加 --force-overwrites 覆盖已存在文件。重复链接时 yt-dlp
+// 可能不重写文件、只打印旧路径，因此记录下载开始时刻：全部输出文件都早于
+// 该时刻即判定为此前已下载，返回 Skipped 且不填 Files。多次输出（如分片
 // 合并）仍归入同一个 Post；播放列表的多 Post 语义不在本任务范围内。
 func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) result.Result {
 	site := sites.Detect(rawURL)
@@ -109,6 +116,8 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 	args = append(args, cookies...)
 	args = append(args, rawURL)
 
+	// 下载开始时刻用于区分“本次新写入”与“此前已存在”。
+	start := time.Now()
 	stdout, stderr, err = d.Run(ctx, args...)
 	if err != nil {
 		return failed(err, stderr)
@@ -121,6 +130,19 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 			msg = "yt-dlp 未输出已下载文件路径"
 		}
 		return result.Result{Status: result.Failed, Message: "下载失败: " + msg}
+	}
+
+	if !force && filesPredate(files, start) {
+		return result.Result{
+			Status:  result.Skipped,
+			Message: "已下载过: " + title,
+			Posts: []result.Post{{
+				Site:   site,
+				Author: author,
+				Title:  title,
+				Status: result.Skipped,
+			}},
+		}
 	}
 
 	return result.Result{
@@ -172,6 +194,27 @@ func existingFiles(stdout []byte) []string {
 		files = append(files, path)
 	}
 	return files
+}
+
+// filesPredate 报告所有文件是否都明显早于下载开始时刻。
+//
+// 任一文件无法 stat 或 mtime 不早于 cutoff 都返回 false：宁可重复上传，
+// 也不把本次真正写入的文件误报为“已下载过”。
+func filesPredate(files []string, start time.Time) bool {
+	if len(files) == 0 {
+		return false
+	}
+	cutoff := start.Add(-mtimeGuard)
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			return false
+		}
+		if !info.ModTime().Before(cutoff) {
+			return false
+		}
+	}
+	return true
 }
 
 // failed 把子进程错误映射成可读提示，保留 stderr 尾部便于排查。
