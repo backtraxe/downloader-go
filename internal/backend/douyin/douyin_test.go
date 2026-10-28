@@ -37,6 +37,7 @@ func testDownloader(t *testing.T) *Downloader {
 		DataDir: t.TempDir(),
 		Now:     func() time.Time { return time.Unix(1791914678, 0) },
 		RNG:     fixedRNG{value: 0.5},
+		Sleep:   func(time.Duration) {},
 	}
 }
 
@@ -392,11 +393,31 @@ func TestDownloadNoteWritesLiveAndNoteVideo(t *testing.T) {
 	}
 }
 
+const jsvmPage = `<html><body><script>var glb;(glb="undefined"==typeof window?global:window)._$jsvmprt=function(){}</script></body></html>`
+
+func serveDetailJSON(w http.ResponseWriter, detail map[string]any) {
+	_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 0, "aweme_detail": detail})
+}
+
 func TestDownloadNoteJSVMFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `<html><body><script>var glb;(glb="undefined"==typeof window?global:window)._$jsvmprt=function(){}</script></body></html>`)
+	oldBase := detailAPIBase
+	defer func() { detailAPIBase = oldBase }()
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			fmt.Fprint(w, jsvmPage)
+		case "/detail":
+			// 签名兜底也被 Argus 拒绝：确定性失败，不应重试。
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, "Blocked by ArgusSecurityPlugin Uifid Not Found")
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer srv.Close()
+	detailAPIBase = srv.URL + "/detail"
 
 	d := testDownloader(t)
 	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x", false)
@@ -408,11 +429,97 @@ func TestDownloadNoteJSVMFails(t *testing.T) {
 	}
 }
 
-func TestDownloadNoteCaptchaFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `<html><head><title>验证码中间页</title></head><body></body></html>`)
+func TestDownloadNoteJSVMFallsBackToDetailAPI(t *testing.T) {
+	oldBase := detailAPIBase
+	defer func() { detailAPIBase = oldBase }()
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			fmt.Fprint(w, jsvmPage)
+		case "/detail":
+			serveDetailJSON(w, map[string]any{
+				"awemeId":    "7666381907030529443",
+				"desc":       "兜底笔记",
+				"authorInfo": map[string]any{"nickname": "兜底作者"},
+				"images": []any{
+					map[string]any{"urlList": []any{srv.URL + "/img1.png"}},
+				},
+			})
+		case "/img1.png":
+			writePNG(w)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer srv.Close()
+	detailAPIBase = srv.URL + "/detail"
+
+	d := testDownloader(t)
+	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x; ttwid=y", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status %s msg %s", res.Status, res.Message)
+	}
+	if len(res.Posts) != 1 || len(res.Posts[0].Files) == 0 {
+		t.Fatalf("posts: %+v", res.Posts)
+	}
+	want := filepath.Join(d.DataDir, "download", "douyin", "兜底作者", "兜底笔记_7666381907030529443", "001.png")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDownloadNoteJSVMFailsWhenDetailAlsoFails(t *testing.T) {
+	oldBase := detailAPIBase
+	defer func() { detailAPIBase = oldBase }()
+
+	var detailHits int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			fmt.Fprint(w, jsvmPage)
+		case "/detail":
+			atomic.AddInt32(&detailHits, 1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	detailAPIBase = srv.URL + "/detail"
+
+	d := testDownloader(t)
+	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x; ttwid=y", false)
+	if res.Status != result.Failed {
+		t.Fatalf("status %s", res.Status)
+	}
+	if !strings.Contains(res.Message, "Cookie") {
+		t.Fatalf("message: %s", res.Message)
+	}
+	if got := atomic.LoadInt32(&detailHits); got != 3 {
+		t.Fatalf("detail attempts: %d want 3", got)
+	}
+}
+
+func TestDownloadNoteCaptchaFails(t *testing.T) {
+	oldBase := detailAPIBase
+	defer func() { detailAPIBase = oldBase }()
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			fmt.Fprint(w, `<html><head><title>验证码中间页</title></head><body></body></html>`)
+		case "/detail":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	detailAPIBase = srv.URL + "/detail"
 
 	d := testDownloader(t)
 	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x", false)
@@ -570,5 +677,85 @@ func TestDownloadVideoNonJSON(t *testing.T) {
 	res := d.DownloadVideo(context.Background(), "https://www.douyin.com/video/123", "UIFID=uid; ttwid=t", false)
 	if res.Status != result.Failed || !strings.Contains(res.Message, "JSON") {
 		t.Fatalf("status %s msg %s", res.Status, res.Message)
+	}
+}
+
+func TestDetailAPIRetriesEmptyResponse(t *testing.T) {
+	oldBase := detailAPIBase
+	defer func() { detailAPIBase = oldBase }()
+
+	var hits int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/detail":
+			if atomic.AddInt32(&hits, 1) == 1 {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			detail := makeCamelDetail()
+			detail["video"] = map[string]any{"play_addr": map[string]any{"url_list": []any{srv.URL + "/v.mp4"}}}
+			serveDetailJSON(w, detail)
+		case "/v.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p'})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	detailAPIBase = srv.URL + "/detail"
+
+	d := testDownloader(t)
+	res := d.DownloadVideo(context.Background(), "https://www.douyin.com/video/7666381907030529443", "UIFID=uid; ttwid=t", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status %s msg %s", res.Status, res.Message)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("detail attempts: %d want 2", got)
+	}
+	if len(res.Posts) != 1 || len(res.Posts[0].Files) != 1 {
+		t.Fatalf("posts: %+v", res.Posts)
+	}
+}
+
+func TestPageRetriesTransient(t *testing.T) {
+	var hits int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			if atomic.AddInt32(&hits, 1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			detail := map[string]any{
+				"awemeId":    "7666381907030529443",
+				"desc":       "重试笔记",
+				"authorInfo": map[string]any{"nickname": "重试作者"},
+				"images": []any{
+					map[string]any{"urlList": []any{srv.URL + "/img1.png"}},
+				},
+			}
+			fmt.Fprint(w, makePaceFHTML(detail))
+		case "/img1.png":
+			writePNG(w)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	d := testDownloader(t)
+	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x; ttwid=y", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status %s msg %s", res.Status, res.Message)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("page attempts: %d want 2", got)
+	}
+	want := filepath.Join(d.DataDir, "download", "douyin", "重试作者", "重试笔记_7666381907030529443", "001.png")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatal(err)
 	}
 }

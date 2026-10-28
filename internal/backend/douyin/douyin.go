@@ -38,8 +38,18 @@ const (
 	// downloadConcurrency 与 Python 版 ThreadPoolExecutor(max_workers=5) 一致。
 	downloadConcurrency = 5
 
+	// pageAttempts / detailAttempts 是页面与详情接口的总尝试次数（含首次）。
+	pageAttempts   = 3
+	detailAttempts = 3
+
 	// cookieRefreshHint 是面向用户的 Cookie 刷新提示。
 	cookieRefreshHint = "请刷新 Cookie（cookies/douyin.txt）后重试"
+)
+
+// pageBackoff / detailBackoff 是失败后每次重试前的等待时间（与任务决议一致）。
+var (
+	pageBackoff   = []time.Duration{300 * time.Millisecond, 600 * time.Millisecond}
+	detailBackoff = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond}
 )
 
 // msTokenAlphabet 与 Python 版伪造 msToken 的字符表一致。
@@ -80,13 +90,15 @@ var apiBaseParams = [][2]string{
 
 // Downloader 是抖音后端的配置与入口。
 //
-// Now 与 RNG 可注入以便测试签名时间戳与随机噪声；为零值时分别使用
-// time.Now 与 douyinsign.NewABogus 的默认随机源。
+// Now、RNG 与 Sleep 可注入以便测试：为零值时分别使用 time.Now、
+// douyinsign.NewABogus 的默认随机源与 time.Sleep。
 type Downloader struct {
 	HTTP    *httpclient.Client
 	DataDir string
 	Now     func() time.Time
 	RNG     douyinsign.RNG
+	// Sleep 替换重试退避的 time.Sleep，便于测试注入 no-op。
+	Sleep func(time.Duration)
 }
 
 // DownloadNote 下载抖音图文笔记的图片、实况视频与笔记级视频。
@@ -98,44 +110,48 @@ func (d *Downloader) DownloadNote(ctx context.Context, rawURL, cookie string, fo
 		return failed("下载客户端未配置")
 	}
 
-	resp, err := d.HTTP.Get(ctx, httpclient.Request{
-		URL:    rawURL,
-		Header: pageHeaders(),
-		Cookie: cookie,
-	})
+	body, statusCode, err := d.fetchPage(ctx, rawURL, cookie)
 	if err != nil {
 		return failed("请求失败（网络异常）")
-	}
-	body, readErr := resp.ReadAll(maxPageBytes)
-	statusCode := resp.StatusCode
-	_ = resp.Close()
-	if readErr != nil {
-		return failed("读取页面失败（网络异常）")
 	}
 	if statusCode >= 400 {
 		return failed(fmt.Sprintf("请求失败（HTTP %d）", statusCode))
 	}
 	html := string(body)
 
-	switch DetectChallenge(html) {
-	case CaptchaChallenge:
-		return failed("触发抖音验证码中间页（IP 高频或网络被限流）")
-	case JSVMChallenge:
-		return failed("抖音返回反爬挑战页（Cookie 缺失或失效）。" + cookieRefreshHint)
-	}
-
 	awemeID := noteIDFromURL(rawURL)
-	aweme, parseErr := ParsePaceF(html)
-	if parseErr != nil {
-		// 页面结构变更时退回签名 detail API（签名链路独立于 HTML 链路）。
-		if awemeID == "" {
-			return failed("未定位到笔记详情（页面结构变更或 Cookie 失效）")
+	var aweme *Aweme
+	if challenge := DetectChallenge(html); challenge != NoChallenge {
+		// 反爬标记打在 HTML 链路上，签名 detail API 是独立链路：先尝试
+		// 兜底，成功则继续下载；只有兜底也失败才返回 Cookie 提示。
+		var apiErr error
+		if awemeID != "" {
+			aweme, _, apiErr = d.fetchDetail(ctx, awemeID, cookie)
 		}
-		fallback, _, apiErr := d.fetchDetail(ctx, awemeID, cookie)
-		if apiErr != nil {
-			return failed(apiErr.Error())
+		if aweme == nil {
+			hint := "抖音返回反爬挑战页（Cookie 缺失或失效）。" + cookieRefreshHint
+			if challenge == CaptchaChallenge {
+				hint = "触发抖音验证码中间页（IP 高频或网络被限流）"
+			}
+			if apiErr != nil {
+				hint += "（detail API: " + apiErr.Error() + "）"
+			}
+			return failed(hint)
 		}
-		aweme = fallback
+	} else {
+		var parseErr error
+		aweme, parseErr = ParsePaceF(html)
+		if parseErr != nil {
+			// 页面结构变更时同样退回签名 detail API。
+			if awemeID == "" {
+				return failed("未定位到笔记详情（页面结构变更或 Cookie 失效）")
+			}
+			var apiErr error
+			aweme, _, apiErr = d.fetchDetail(ctx, awemeID, cookie)
+			if apiErr != nil {
+				return failed(apiErr.Error())
+			}
+		}
 	}
 	if awemeID == "" {
 		awemeID = aweme.ID
@@ -401,6 +417,48 @@ func rejectHTML(contentType string) error {
 	return nil
 }
 
+// fetchPage 请求笔记页，最多 pageAttempts 次。
+//
+// 瞬时网络错误与 429/5xx 按 300ms/600ms 退避重试；其余状态原样返回，
+// 由调用方给出 HTTP 错误提示。
+func (d *Downloader) fetchPage(ctx context.Context, rawURL, cookie string) ([]byte, int, error) {
+	var lastErr error
+	status := 0
+	for attempt := 0; attempt < pageAttempts; attempt++ {
+		resp, err := d.HTTP.Get(ctx, httpclient.Request{
+			URL:    rawURL,
+			Header: pageHeaders(),
+			Cookie: cookie,
+		})
+		if err != nil {
+			lastErr = err
+			if d.canRetry(attempt, pageAttempts, ctx) && httpclient.IsTransient(err) {
+				d.sleep(backoffFor(pageBackoff, attempt))
+				continue
+			}
+			return nil, 0, err
+		}
+
+		body, readErr := resp.ReadAll(maxPageBytes)
+		status = resp.StatusCode
+		_ = resp.Close()
+		if readErr != nil {
+			lastErr = readErr
+			if d.canRetry(attempt, pageAttempts, ctx) && httpclient.IsTransient(readErr) {
+				d.sleep(backoffFor(pageBackoff, attempt))
+				continue
+			}
+			return nil, status, readErr
+		}
+		if d.canRetry(attempt, pageAttempts, ctx) && httpclient.IsTransientStatus(status) {
+			d.sleep(backoffFor(pageBackoff, attempt))
+			continue
+		}
+		return body, status, nil
+	}
+	return nil, status, lastErr
+}
+
 // fetchDetail 调签名 detail API 取 aweme detail。
 //
 // 返回解析后的 Aweme 与原始 detail 字典（视频后端需要完整的播放地址
@@ -443,42 +501,95 @@ func (d *Downloader) fetchDetail(ctx context.Context, awemeID, cookieText string
 		header.Set(name, value)
 	}
 
-	resp, err := d.HTTP.Get(ctx, httpclient.Request{
-		URL:    detailAPIBase + "?" + signedQuery,
-		Header: header,
-		Cookie: cookieText,
-	})
-	if err != nil {
-		return nil, nil, errors.New("获取视频详情失败（网络异常）")
-	}
-	defer resp.Close()
+	// detail API 最多 detailAttempts 次：瞬时网络错误、429/5xx、2xx 空响应
+	// 与非 JSON 都退避重试；403 是确定性拒绝，不重试。
+	var lastErr error
+	for attempt := 0; attempt < detailAttempts; attempt++ {
+		resp, err := d.HTTP.Get(ctx, httpclient.Request{
+			URL:    detailAPIBase + "?" + signedQuery,
+			Header: header,
+			Cookie: cookieText,
+		})
+		if err != nil {
+			lastErr = errors.New("获取视频详情失败（网络异常）")
+			if d.canRetry(attempt, detailAttempts, ctx) && httpclient.IsTransient(err) {
+				d.sleep(backoffFor(detailBackoff, attempt))
+				continue
+			}
+			return nil, nil, lastErr
+		}
 
-	switch {
-	case resp.StatusCode == http.StatusForbidden:
-		return nil, nil, errors.New("抖音详情接口被风控拒绝（403，UIFID 缺失或失效）。" + cookieRefreshHint)
-	case resp.StatusCode >= 400:
-		return nil, nil, fmt.Errorf("获取抖音详情失败（HTTP %d）", resp.StatusCode)
-	}
+		status := resp.StatusCode
+		if status == http.StatusForbidden {
+			_ = resp.Close()
+			return nil, nil, errors.New("抖音详情接口被风控拒绝（403，UIFID 缺失或失效）。" + cookieRefreshHint)
+		}
+		if status >= 400 {
+			_ = resp.Close()
+			lastErr = fmt.Errorf("获取抖音详情失败（HTTP %d）", status)
+			if d.canRetry(attempt, detailAttempts, ctx) && httpclient.IsTransientStatus(status) {
+				d.sleep(backoffFor(detailBackoff, attempt))
+				continue
+			}
+			return nil, nil, lastErr
+		}
 
-	body, err := resp.ReadAll(maxPageBytes)
-	if err != nil {
-		return nil, nil, errors.New("读取详情响应失败（网络异常）")
-	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, nil, errors.New("抖音 Cookie 已失效（详情接口返回空响应）。" + cookieRefreshHint)
-	}
+		body, readErr := resp.ReadAll(maxPageBytes)
+		_ = resp.Close()
+		if readErr != nil {
+			lastErr = errors.New("读取详情响应失败（网络异常）")
+			if d.canRetry(attempt, detailAttempts, ctx) && httpclient.IsTransient(readErr) {
+				d.sleep(backoffFor(detailBackoff, attempt))
+				continue
+			}
+			return nil, nil, lastErr
+		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			lastErr = errors.New("抖音 Cookie 已失效（详情接口返回空响应）。" + cookieRefreshHint)
+			if d.canRetry(attempt, detailAttempts, ctx) {
+				d.sleep(backoffFor(detailBackoff, attempt))
+				continue
+			}
+			return nil, nil, lastErr
+		}
 
-	var top map[string]any
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(&top); err != nil {
-		return nil, nil, errors.New("抖音详情接口返回非 JSON 响应")
+		var top map[string]any
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.UseNumber()
+		if err := dec.Decode(&top); err != nil {
+			lastErr = errors.New("抖音详情接口返回非 JSON 响应")
+			if d.canRetry(attempt, detailAttempts, ctx) {
+				d.sleep(backoffFor(detailBackoff, attempt))
+				continue
+			}
+			return nil, nil, lastErr
+		}
+		detail, ok := top["aweme_detail"].(map[string]any)
+		if !ok || len(detail) == 0 {
+			return nil, nil, fmt.Errorf("抖音详情接口返回异常（status_code=%s）", valueString(top["status_code"]))
+		}
+		return awemeFromDetail(detail), detail, nil
 	}
-	detail, ok := top["aweme_detail"].(map[string]any)
-	if !ok || len(detail) == 0 {
-		return nil, nil, fmt.Errorf("抖音详情接口返回异常（status_code=%s）", valueString(top["status_code"]))
+	return nil, nil, lastErr
+}
+
+// canRetry 判断当前失败是否还有下一次尝试机会（上下文已取消时不再等待）。
+func (d *Downloader) canRetry(attempt, attempts int, ctx context.Context) bool {
+	return attempt < attempts-1 && ctx.Err() == nil
+}
+
+// backoffFor 取第 attempt 次失败后的等待时间；表耗尽时沿用最后一档。
+func backoffFor(schedule []time.Duration, attempt int) time.Duration {
+	if len(schedule) == 0 {
+		return 0
 	}
-	return awemeFromDetail(detail), detail, nil
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(schedule) {
+		attempt = len(schedule) - 1
+	}
+	return schedule[attempt]
 }
 
 // detailParams 构造签名前的 query 参数：基础指纹段 + aweme_id + msToken。
@@ -537,6 +648,15 @@ func (d *Downloader) now() time.Time {
 	return time.Now()
 }
 
+// sleep 调用注入的 Sleep，未注入时回退到 time.Sleep。
+func (d *Downloader) sleep(duration time.Duration) {
+	if d.Sleep != nil {
+		d.Sleep(duration)
+		return
+	}
+	time.Sleep(duration)
+}
+
 // pageHeaders 是笔记页请求头（UA 与指纹版本一致，Cookie 由调用方携带）。
 func pageHeaders() http.Header {
 	header := http.Header{}
@@ -581,21 +701,28 @@ func resolveBasename(desc string) string {
 }
 
 // noteIDFromURL 提取 /note/<数字ID>，不匹配返回空串。
+//
+// douyin.com 域名优先；不匹配时退回路径匹配，兼容离线测试与短链展开后的
+// 代理地址（公开的 IsNoteURL 仍严格要求 douyin.com）。
 func noteIDFromURL(rawURL string) string {
-	match := noteURLPattern.FindStringSubmatch(rawURL)
-	if len(match) < 2 {
-		return ""
+	if match := noteURLPattern.FindStringSubmatch(rawURL); len(match) >= 2 {
+		return match[1]
 	}
-	return match[1]
+	if match := pathNoteIDPattern.FindStringSubmatch(rawURL); len(match) >= 2 {
+		return match[1]
+	}
+	return ""
 }
 
 // videoIDFromURL 提取 /video/<数字ID>，不匹配返回空串。
 func videoIDFromURL(rawURL string) string {
-	match := videoURLPattern.FindStringSubmatch(rawURL)
-	if len(match) < 2 {
-		return ""
+	if match := videoURLPattern.FindStringSubmatch(rawURL); len(match) >= 2 {
+		return match[1]
 	}
-	return match[1]
+	if match := pathVideoIDPattern.FindStringSubmatch(rawURL); len(match) >= 2 {
+		return match[1]
+	}
+	return ""
 }
 
 // failed 生成统一的失败结果。

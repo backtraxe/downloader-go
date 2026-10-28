@@ -72,6 +72,12 @@ var (
 	// videoURLPattern 与 Python 的 _VIDEO_URL_RE 一致：/video/<数字ID>。
 	videoURLPattern = regexp.MustCompile(`(?i)https?://(?:www\.)?douyin\.com/video/(\d+)`)
 
+	// pathNoteIDPattern / pathVideoIDPattern 仅按路径提取 ID，用于页面地址
+	// 不是 douyin.com 的场景（离线测试、短链展开后的代理地址）。公开的
+	// IsNoteURL/IsVideoURL 仍严格要求 douyin.com 域名。
+	pathNoteIDPattern  = regexp.MustCompile(`(?i)/note/(\d+)`)
+	pathVideoIDPattern = regexp.MustCompile(`(?i)/video/(\d+)`)
+
 	// paceFPattern 匹配 self.__pace_f.push([1,"<chunk>"])，捕获 JS 字符串
 	// 字面量内容（不含外层引号）。
 	paceFPattern = regexp.MustCompile(`(?s)self\.__pace_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)`)
