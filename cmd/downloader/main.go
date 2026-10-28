@@ -21,6 +21,7 @@ import (
 	"github.com/backtraxe/downloader-go/internal/dispatch"
 	"github.com/backtraxe/downloader-go/internal/httpclient"
 	"github.com/backtraxe/downloader-go/internal/logging"
+	"github.com/backtraxe/downloader-go/internal/netdns"
 	"github.com/backtraxe/downloader-go/internal/result"
 	"github.com/backtraxe/downloader-go/internal/telegram"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
@@ -48,6 +49,9 @@ type dependencies struct {
 }
 
 func main() {
+	// Termux 没有 /etc/resolv.conf，纯 Go 解析器会退回 [::1]:53；在 Termux
+	// 上换成直连公共 DNS 的解析器。其他平台是 no-op。
+	netdns.InstallDefault()
 	// 安装带请求作用域的默认 logger，让每条链接的 [rXXXX] 前缀真正出现在
 	// 生产日志里；bot 常驻与 CLI 共用同一条 stderr 通道。
 	slog.SetDefault(logging.New(os.Stderr, slog.LevelInfo))

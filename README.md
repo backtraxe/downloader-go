@@ -35,6 +35,21 @@ bash install-dl-go.sh --data-dir "$HOME/dl-go-data" \
 脚本最后会检查 `yt-dlp` 与 `ffmpeg`，缺失时提示
 `pkg install yt-dlp ffmpeg`，并打印 `dl-go version`。
 
+### Termux DNS
+
+Termux 没有 `/etc/resolv.conf`，纯 Go 的 DNS 解析器会退回
+`127.0.0.1:53` / `[::1]:53`，表现为 `lookup ... connection refused`，
+即使 `curl` 能正常访问。`dl-go` 在 Termux 上会自动改用直连公共 DNS
+（`1.1.1.1`、`223.5.5.5`、`8.8.8.8`）。
+
+需要指定 DNS 时：
+
+```bash
+DOWNLOADER_DNS=223.5.5.5:53 dl-go bot
+DOWNLOADER_DNS=1.1.1.1:53,8.8.8.8:53 dl-go bot
+DOWNLOADER_DNS=off dl-go bot      # 保留系统解析器
+```
+
 ## 命令
 
 全局 `--data-dir` 必须写在子命令之前。
