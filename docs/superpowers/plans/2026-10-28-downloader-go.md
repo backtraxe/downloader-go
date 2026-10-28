@@ -1974,6 +1974,15 @@ func TestCookieImportAndCheck(t *testing.T) {
     code = runWith([]string{"--data-dir", dir, "cookie", "check", "xiaohongshu"}, strings.NewReader(""), &out, &out, dependencies{})
     if code != 1 { t.Fatalf("missing should exit 1: %d %s", code, out.String()) }
 }
+
+func TestCookieSiteNormalization(t *testing.T) {
+    // check douyin.txt / DOUYIN / 重复参数 都应命中同一个文件且不失败；
+    // import Douyin 写到 cookies/douyin.txt。
+}
+
+func TestCookieRejectsTraversalSite(t *testing.T) {
+    // import ../evil 与 check ../../etc/foo 必须退出 1，且父目录不产生文件。
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1984,6 +1993,8 @@ Expected: FAIL。
 - [ ] **Step 3: 实现**
 
 `import` 读取全部 stdin，`cookies.Detect` 后按站点写 `cookies/<site>.txt`（Netscape 直接存，Header 也存原文，JSON 转 Header）；输出路径，不输出内容。`check` 遍历 `cookies/*.txt` 或指定站点，打印 `✓/✗` 与缺失键，有缺口返回 1。
+
+**站点名必须先归一化再拼路径**：`strings.TrimSpace` → 去掉末尾 `.txt` → `strings.ToLower`；只接受 `^[a-z0-9][a-z0-9._-]*$`，拒绝空串、包含 `/`/`\`、`..`、绝对路径的输入（退出 1，提示站点名非法）。`import` 和 `check` 共用同一个归一化函数；`check` 对多个参数去重、跳过空参数。这样 `Douyin`/`douyin.txt` 都能命中 `cookies/douyin.txt`，也不会把凭据写到 `cookies/` 之外。
 
 - [ ] **Step 4: 运行测试确认通过**
 
