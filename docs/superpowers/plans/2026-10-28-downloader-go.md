@@ -427,6 +427,9 @@ func TestDetect(t *testing.T) {
         "https://youtu.be/x":                    "youtube",
         "https://instagr.am/x":                  "instagram",
         "https://t.co/x":                        "twitter",
+        "https://x.com/a":                       "twitter",
+        "https://netflix.com/a":                 "netflix.com",
+        "https://next.com/a":                    "next.com",
         "https://example.com/a":                 "example.com",
         "http://localhost:8080/a":               "localhost_8080",
     }
@@ -453,6 +456,12 @@ func TestExtractURLsTrimsCJK(t *testing.T) {
     if !reflect.DeepEqual(got, want) { t.Fatalf("%v want %v", got, want) }
 }
 
+func TestExtractURLsUnicodeWhitespace(t *testing.T) {
+    got := ExtractURLs("https://a.com/x https://b.com/y　hello")
+    want := []string{"https://a.com/x", "https://b.com/y"}
+    if !reflect.DeepEqual(got, want) { t.Fatalf("%v want %v", got, want) }
+}
+
 func TestNormalizeURL(t *testing.T) {
     if got := NormalizeURL("//cdn.x/a.jpg", "https://x.com/p"); got != "https://cdn.x/a.jpg" { t.Fatal(got) }
     if got := NormalizeURL("/a.jpg", "https://x.com/p/q"); got != "https://x.com/a.jpg" { t.Fatal(got) }
@@ -473,7 +482,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-`Detect` 规则与 Python 版一致；未知域名取最后两段，端口替换为 `_`。`ExtractURLs` 去重保序，剔除尾部 CJK/全角标点/引号括号。`LoadCookie` 读取 `cookies/<site>.txt`，缺失或空白返回 `ErrNoCookie`。
+`Detect` 用 host 精确匹配或 `.` 后缀匹配（修正 Python 版的子串误匹配：`netflix.com` 不得命中 `x.com`，`next.com` 不得命中 `t.co`）；未知域名取最后两段，端口替换为 `_`。`ExtractURLs` 的分隔类必须覆盖 Python 的 Unicode `\s`（RE2 的 `\s` 只有 ASCII，需加 `\p{Z}`、`\x{0085}`、`\v`），去重保序，剔除尾部 CJK/全角标点/引号括号（不含 `[`）。`LoadCookie` 读取 `cookies/<site>.txt`，缺失或空白返回 `ErrNoCookie`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
