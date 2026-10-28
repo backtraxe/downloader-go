@@ -640,6 +640,7 @@ git commit -m "feat: add filesystem and media helpers"
 package cookies
 
 import (
+    "os"
     "strings"
     "testing"
 )
@@ -662,6 +663,32 @@ func TestCheckDouyinGate(t *testing.T) {
     if len(Check("ttwid=x; UIFID=y", "douyin")) != 0 { t.Fatalf("complete cookie reported: %+v", Check("ttwid=x; UIFID=y", "douyin")) }
     if len(Check("ttwid=x", "douyin")) != 1 { t.Fatalf("missing UIFID not reported") }
     if len(Check("UIFID=y", "douyin")) != 1 { t.Fatalf("missing ttwid/sessionid not reported") }
+    if len(Check("UIFID=; ttwid=", "douyin")) == 0 { t.Fatal("empty values must count as gaps") }
+    if len(Check("a1=short; webId=x", "xiaohongshu")) == 0 { t.Fatal("short a1 must be reported") }
+}
+
+func TestJSONArrays(t *testing.T) {
+    for _, raw := range []string{
+        `[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]`,
+        `{"cookies":[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]}`,
+    } {
+        m, f, err := ParseMap(raw)
+        if err != nil || f != JSONCookies || m["a1"] != "abc" { t.Fatalf("%s: %v %v %v", raw, m, f, err) }
+    }
+}
+
+func TestImportPerSiteFormat(t *testing.T) {
+    dir := t.TempDir()
+    p, err := Import(dir, "bilibili", strings.NewReader("Cookie: SESSDATA=abc"))
+    if err != nil { t.Fatal(err) }
+    data, _ := os.ReadFile(p)
+    if !strings.HasPrefix(string(data), "# Netscape HTTP Cookie File") { t.Fatalf("%s", data) }
+
+    p, err = Import(dir, "xiaohongshu", strings.NewReader(
+        `[{"name":"a1","value":"abc","domain":".xiaohongshu.com"},{"name":"third","value":"x","domain":".evil.com"}]`))
+    if err != nil { t.Fatal(err) }
+    data, _ = os.ReadFile(p)
+    if !strings.Contains(string(data), "a1=abc") || strings.Contains(string(data), "third=") { t.Fatalf("%s", data) }
 }
 ```
 
@@ -672,7 +699,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-`Detect` 先尝试 `encoding/json` 对象，再按 Tab ≥7 字段判 Netscape，否则 Header。`ParseMap` 返回键值（Netscape 取第 6/7 字段）。`Check` 只检查键名，不打印值；抖音缺 `UIFID`/`UIFID_TEMP` 或 `ttwid`/`sessionid` 都算缺口；小红书检查 `a1` 与 `webId`/`web_session`。
+`Detect` 先尝试 JSON：顶层对象、`{"cookies":[...]}` 或顶层数组都算 `JSONCookies`（Cookie-Editor 默认导出是数组）；再按 Tab ≥7 字段判 Netscape，否则 Header。`ParseMap` 返回键值（Netscape 取第 6/7 字段；JSON 数组取每个元素的 name/value，空值保留为空串）。`Check` 只检查键名（不打印值），但空值视为缺失：抖音 `UIFID`/`UIFID_TEMP` 与 `ttwid`/`sessionid` 都需非空；小红书 `a1` 非空且长度 ≥30，`webId`/`web_session` 至少一个非空。`Import` 按站点输出所需格式：`douyin`/`bilibili`/`youtube`/`instagram`/`twitter` 写 Netscape（域分别为 `.douyin.com`/`.bilibili.com`/`.youtube.com`/`.instagram.com`/`.x.com`），`xiaohongshu` 写请求头并只保留 `domain` 含 `xiaohongshu.com` 的 JSON 条目；未知站点保留 Header。写入 0600，先 `MkdirAll`，不打印任何值。
 
 - [ ] **Step 4: 运行测试确认通过**
 
