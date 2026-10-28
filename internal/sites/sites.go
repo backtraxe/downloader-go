@@ -33,24 +33,28 @@ var siteHosts = []struct {
 
 // Detect 解析链接并返回小写站点名。
 //
-// 已知站点返回固定名称；未知域名取最后两段（如 a.b.example.co.uk →
-// co.uk）；不足两段时用完整 host 并把端口冒号替换为下划线（如
-// localhost:8080 → localhost_8080）；无法解析出 host 时返回 "unknown"。
+// 已知站点用 host 精确匹配或 "." 后缀匹配（子域 www.xiaohongshu.com
+// 命中 xiaohongshu.com），避免 Python 版子串匹配把 netflix.com 误判为
+// twitter。未知域名取最后两段（如 a.b.example.co.uk → co.uk）；不足两段
+// 时用完整 host 并把端口冒号替换为下划线（如 localhost:8080 →
+// localhost_8080）；无法解析出 host 时返回 "unknown"。
 func Detect(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return "unknown"
 	}
-	host := strings.ToLower(u.Host)
 
+	// Hostname 会去掉端口与 userinfo，匹配不受 :443 之类影响。
+	hostname := strings.ToLower(u.Hostname())
 	for _, site := range siteHosts {
 		for _, h := range site.hosts {
-			if strings.Contains(host, h) {
+			if hostname == h || strings.HasSuffix(hostname, "."+h) {
 				return site.name
 			}
 		}
 	}
 
+	host := strings.ToLower(u.Host)
 	parts := strings.Split(strings.SplitN(host, ":", 2)[0], ".")
 	if len(parts) >= 2 {
 		return parts[len(parts)-2] + "." + parts[len(parts)-1]

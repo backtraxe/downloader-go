@@ -17,6 +17,12 @@ func TestDetect(t *testing.T) {
 		"https://youtu.be/x":                    "youtube",
 		"https://instagr.am/x":                  "instagram",
 		"https://t.co/x":                        "twitter",
+		"https://x.com/a":                       "twitter",
+		"https://netflix.com/a":                 "netflix.com",
+		"https://next.com/a":                    "next.com",
+		"https://dropbox.com/a":                 "dropbox.com",
+		"https://sprint.com/a":                  "sprint.com",
+		"https://box.com/a":                     "box.com",
 		"https://example.com/a":                 "example.com",
 		"http://localhost:8080/a":               "localhost_8080",
 	}
@@ -33,6 +39,8 @@ func TestDetectUnknown(t *testing.T) {
 		"https://X.COM/foo":              "twitter",
 		"https://www.bilibili.com/video": "bilibili",
 		"https://sub.douyin.com/x":       "douyin",
+		"https://www.x.com/a":            "twitter",
+		"https://notx.com/a":             "notx.com",
 		"not a url":                      "unknown",
 		"":                               "unknown",
 	}

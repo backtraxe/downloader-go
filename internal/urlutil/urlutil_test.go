@@ -13,6 +13,22 @@ func TestExtractURLsTrimsCJK(t *testing.T) {
 	}
 }
 
+func TestExtractURLsUnicodeWhitespace(t *testing.T) {
+	// Python 的 \s 是 Unicode 语义：NBSP（U+00A0）与表意空格（U+3000）
+	// 都必须分隔 URL，否则会把多条链接或后续拉丁文字并进一条。
+	got := ExtractURLs("https://a.com/x https://b.com/y　hello")
+	want := []string{"https://a.com/x", "https://b.com/y"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v want %v", got, want)
+	}
+
+	// NEL（U+0085）同样属于 Unicode 空白。
+	got = ExtractURLs("https://a.com/x\u0085https://b.com/y")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v want %v", got, want)
+	}
+}
+
 func TestExtractURLsEmpty(t *testing.T) {
 	if got := ExtractURLs(""); got != nil {
 		t.Fatalf("got %v, want nil", got)
@@ -26,6 +42,15 @@ func TestExtractURLsTrailingPunctuation(t *testing.T) {
 	// 与 Python 版一致：剔除全角括号、英文引号与尖括号，但不剔除 ASCII 右括号。
 	got := ExtractURLs(`（https://a.com/x） "https://b.com/y" <https://c.com/z>`)
 	want := []string{"https://a.com/x", "https://b.com/y", "https://c.com/z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v want %v", got, want)
+	}
+}
+
+func TestExtractURLsKeepsLeftBracket(t *testing.T) {
+	// Python 的尾部剔除集不含 "["，这里保持一致。
+	got := ExtractURLs("见 https://a.com/x[")
+	want := []string{"https://a.com/x["}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v want %v", got, want)
 	}

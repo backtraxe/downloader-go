@@ -9,7 +9,11 @@ import (
 )
 
 // urlPattern 匹配 http(s):// 开头的完整 URL，直到首个空白字符。
-var urlPattern = regexp.MustCompile(`https?://[^\s]+`)
+//
+// RE2 的 \s 只覆盖 ASCII，而 Python 的 \s 是 Unicode 语义；补上 \p{Z}
+// （含 NBSP、表意空格等）、NEL（U+0085）与 \v，避免分享文案中的
+// Unicode 空白把多条链接或后续文字并成一条。
+var urlPattern = regexp.MustCompile(`https?://[^\s\p{Z}\x{0085}\v]+`)
 
 // shortLinkHosts 是各站点用于跳转的短链域名（精确匹配，忽略大小写）。
 var shortLinkHosts = map[string]struct{}{
@@ -56,7 +60,8 @@ func ExtractURLs(text string) []string {
 
 // isTrailingChar 判断字符是否属于 URL 尾部应剔除的上下文：
 // CJK 统一表意文字与符号区（　-鿿）、全角字符区
-// （＀-￯，含中文标点），以及英文引号、右括号等。
+// （＀-￯，含中文标点），以及英文引号、右尖括号等。
+// 注意集合不含 "["，与 Python 参考实现保持一致。
 func isTrailingChar(r rune) bool {
 	if r >= 0x3000 && r <= 0x9fff {
 		return true
@@ -64,7 +69,7 @@ func isTrailingChar(r rune) bool {
 	if r >= 0xff00 && r <= 0xffef {
 		return true
 	}
-	return strings.ContainsRune("\"'[]>}", r)
+	return strings.ContainsRune("\"']>}", r)
 }
 
 // IsShortLink 判断 URL 的 host 是否属于已知短链域名（不校验路径）。
