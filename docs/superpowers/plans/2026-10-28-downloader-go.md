@@ -1044,7 +1044,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-探测参数：`-J --skip-download --no-warnings`；有非空 Cookie 文件时加 `--cookies <path>`。下载参数：`--no-warnings --newline -o <outtmpl> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath`；`force` 加 `--force-overwrites`。outtmpl 为 `download/<site>[/<author>]/%(title).200B.%(ext)s`。stdout 按行取最后一条存在的文件路径；无输出则 `failed`。错误信息含 `Fresh cookies` 时提示签名拦截，含 `Sign in`/`login` 时提示 Cookie。
+探测参数：`-J --skip-download --no-warnings`；有非空 Cookie 文件时加 `--cookies <path>`。下载参数：`--no-warnings --newline -o <outtmpl> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath`；`force` 加 `--force-overwrites`。outtmpl 为 `download/<site>[/<author>]/%(title).200B.%(ext)s`。stdout 收集每一条指向存在文件的路径，全部放进同一个 `Post.Files`（播放列表不拆 Post）；一条都没有则 `failed`。错误信息含 `Fresh cookies` 时提示签名拦截，含 `Sign in`/`login` 时提示 Cookie。
 
 - [ ] **Step 4: 运行测试确认通过**
 
