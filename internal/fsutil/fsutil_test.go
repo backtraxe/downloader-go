@@ -17,6 +17,15 @@ func TestSanitizeFilename(t *testing.T) {
 	if SanitizeFilename("", "unknown", 80) != "unknown" {
 		t.Fatal("empty")
 	}
+	if SanitizeFilename("..", "untitled", 80) != "untitled" {
+		t.Fatal("dot-dot")
+	}
+	if SanitizeFilename(".", "untitled", 80) != "untitled" {
+		t.Fatal("dot")
+	}
+	if SanitizeFilename(" .. ", "untitled", 80) != "untitled" {
+		t.Fatal("trimmed dot-dot")
+	}
 }
 
 func TestSanitizeFilenameTruncatesByRunes(t *testing.T) {
@@ -70,6 +79,15 @@ func TestBuildDownloadDirSanitizes(t *testing.T) {
 	if got != want {
 		t.Fatalf("%q want %q", got, want)
 	}
+	// "." / ".." 不能作为目录层，避免产物逃出下载根目录。
+	got = BuildDownloadDir("data", "site", "..", "..")
+	want = filepath.Join("data", "site", "unknown", "untitled")
+	if got != want {
+		t.Fatalf("%q want %q", got, want)
+	}
+	if got = BuildDownloadDir("data", "site", ".", "."); got != want {
+		t.Fatalf("%q want %q", got, want)
+	}
 }
 
 func TestUniquePathAndExistingByStem(t *testing.T) {
@@ -89,6 +107,15 @@ func TestUniquePathAndExistingByStem(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "002.part"), nil, 0o600)
 	if _, ok := ExistingByStem(filepath.Join(dir, "002.jpg")); ok {
 		t.Fatal(".part counted")
+	}
+	// glob 元字符必须按字面量比较：[合集].jpg 能被同 stem 命中。
+	os.WriteFile(filepath.Join(dir, "[合集].jpg"), []byte("x"), 0o600)
+	if _, ok := ExistingByStem(filepath.Join(dir, "[合集].png")); !ok {
+		t.Fatal("bracket stem")
+	}
+	// 未配对 [ 不能让查找报错，也不能误命中其他文件。
+	if _, ok := ExistingByStem(filepath.Join(dir, "[unmatched.png")); ok {
+		t.Fatal("bad pattern should not match")
 	}
 }
 

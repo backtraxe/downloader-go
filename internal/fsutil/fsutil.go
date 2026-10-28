@@ -22,8 +22,9 @@ const defaultNameMaxLen = 80
 // 空白；空串/纯空白返回 defaultName；超过 maxLen 个字符（rune）时截断。
 //
 // 保留中文等非 ASCII 字符。截断按 rune 而非字节，避免切断 UTF-8 序列；
-// maxLen <= 0 表示不截断。path 分隔符被直接删除而非替换，防止来源不可信
-// 的标题/作者名越层（目录穿越）。
+// maxLen <= 0 表示不截断。path 分隔符被直接删除而非替换，且清洗结果若为
+// "." 或 ".." 一律回退 defaultName，防止来源不可信的标题/作者名拼出
+// 目录穿越路径（目录层落到下载根目录之外）。
 func SanitizeFilename(name, defaultName string, maxLen int) string {
 	cleaned := strings.TrimSpace(strings.Map(func(r rune) rune {
 		if isIllegalFilenameRune(r) {
@@ -31,13 +32,15 @@ func SanitizeFilename(name, defaultName string, maxLen int) string {
 		}
 		return r
 	}, name))
-	if cleaned == "" {
-		return defaultName
-	}
 	if maxLen > 0 {
 		if runes := []rune(cleaned); len(runes) > maxLen {
 			cleaned = string(runes[:maxLen])
 		}
+	}
+	// 截断后仍可能得到 "." / ".."（如 "..x" 截到 2 个字符），统一兜底。
+	switch cleaned {
+	case "", ".", "..":
+		return defaultName
 	}
 	return cleaned
 }
@@ -120,23 +123,31 @@ func splitExt(path string) (stem, ext string) {
 // 命中即返回该路径。用于“重复链接已存在即跳过”：下载前不知道最终扩展名，
 // 按 stem 匹配可跨 .jpg/.webp 等变体识别同一张图。
 //
-// glob 模式为 stem.*；.part/.ytdl/.part-<n> 等下载残留不算已完成文件。
-// 目录与无法 stat 的条目跳过；glob 模式非法（文件名含 [ 等元字符）时返回 false。
+// 遍历目录后按字面量比较 stem，不用 filepath.Glob：标题里的 [、] 会被
+// glob 当成字符类（"[MV] Song" 匹配不到自身，单个 [ 还会返回 ErrBadPattern）。
+// .part/.ytdl/.part-<n> 等下载残留与子目录不算已完成文件；目录不可读时
+// 返回 false。
 func ExistingByStem(path string) (string, bool) {
 	stem, _ := splitExt(path)
-	matches, err := filepath.Glob(stem + ".*")
+	dir := filepath.Dir(stem)
+	base := filepath.Base(stem)
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", false
 	}
-	for _, match := range matches {
-		if IsPartialDownload(filepath.Base(match)) {
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
-		info, err := os.Stat(match)
-		if err != nil || info.IsDir() {
+		name := entry.Name()
+		if IsPartialDownload(name) {
 			continue
 		}
-		return match, true
+		if strings.TrimSuffix(name, filepath.Ext(name)) != base {
+			continue
+		}
+		return filepath.Join(dir, name), true
 	}
 	return "", false
 }
