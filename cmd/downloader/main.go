@@ -26,6 +26,7 @@ import (
 	"github.com/backtraxe/downloader-go/internal/telegram"
 	"github.com/backtraxe/downloader-go/internal/termuxenv"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
+	"github.com/backtraxe/downloader-go/internal/timezone"
 	"github.com/backtraxe/downloader-go/internal/urlutil"
 )
 
@@ -50,6 +51,8 @@ type dependencies struct {
 }
 
 func main() {
+	// 日志默认使用 +08:00；DOWNLOADER_TZ 可覆盖为 IANA 时区或 Local。
+	timezone.ConfigureDefault()
 	// Termux 的 CA bundle 不在标准路径，先指到 $PREFIX/etc/tls，否则所有
 	// HTTPS 请求都会报 unknown authority。
 	termuxenv.ConfigureDefault()
