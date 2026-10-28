@@ -61,11 +61,16 @@ func TestNormalizeUndefined(t *testing.T) {
 }
 
 func TestNormalizeJSLiterals(t *testing.T) {
-	in := `{"when":new Date(1793201339151),"nan":NaN,"inf":Infinity,"ninf":-Infinity}`
+	in := `{"when":new Date(1793201339151),"map":new Map([["a",1]]),` +
+		`"set":new Set([1,2]),"url":new URL("https://x"),` +
+		`"text":"a new thing","nan":NaN,"inf":Infinity,"ninf":-Infinity}`
 	out := NormalizeUndefined(in)
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("normalized JSON invalid: %v (%s)", err, out)
+	}
+	if decoded["text"] != "a new thing" {
+		t.Fatalf("string content changed: %v", decoded["text"])
 	}
 }
 

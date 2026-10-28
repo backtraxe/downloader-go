@@ -72,10 +72,7 @@ var undefinedPattern = regexp.MustCompile(`([\[:,\s])\s*undefined\b`)
 
 // 小红书内嵌状态偶尔会带非 JSON 的 JS 字面量（new Date(...)、NaN、
 // Infinity）。这些字段与笔记详情无关，替换成 null 即可让整段状态可解析。
-var (
-	nonFinitePattern = regexp.MustCompile(`-?Infinity\b|\bNaN\b`)
-	newDatePattern   = regexp.MustCompile(`\bnew\s+Date\s*\([^)]*\)`)
-)
+var nonFinitePattern = regexp.MustCompile(`-?Infinity\b|\bNaN\b`)
 
 // notePathPattern 匹配带作品 ID 的笔记页路径。
 var notePathPattern = regexp.MustCompile(`(?i)/(?:explore|discovery/item|notes)/[^/]+`)
@@ -99,8 +96,120 @@ func HasXsecToken(rawURL string) bool {
 func NormalizeUndefined(raw string) string {
 	out := undefinedPattern.ReplaceAllString(raw, "${1}null")
 	out = nonFinitePattern.ReplaceAllString(out, "null")
-	out = newDatePattern.ReplaceAllString(out, "null")
+	out = replaceNewExpressions(out)
 	return out
+}
+
+// replaceNewExpressions 把字符串外的 `new Foo(...)` 整体替换为 null。
+// 括号配平处理 new Map([...]) / new Set([...]) 这类嵌套参数；字符串内的
+// "new" 不受影响。
+func replaceNewExpressions(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '"' {
+			end := skipJSONString(s, i)
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		if hasWordAt(s, i, "new") {
+			j := i + 3
+			for j < len(s) && isSpaceByte(s[j]) {
+				j++
+			}
+			k := j
+			for k < len(s) && isJSIdentByte(s[k]) {
+				k++
+			}
+			if k > j {
+				m := k
+				for m < len(s) && isSpaceByte(s[m]) {
+					m++
+				}
+				if m < len(s) && s[m] == '(' {
+					if end, ok := matchParen(s, m); ok {
+						b.WriteString("null")
+						i = end + 1
+						continue
+					}
+				}
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func skipJSONString(s string, start int) int {
+	for i := start + 1; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == '"' {
+			return i + 1
+		}
+	}
+	return len(s)
+}
+
+func matchParen(s string, open int) (int, bool) {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			i = skipJSONString(s, i) - 1
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func hasWordAt(s string, i int, word string) bool {
+	if !strings.HasPrefix(s[i:], word) {
+		return false
+	}
+	if i > 0 && isJSIdentByte(s[i-1]) {
+		return false
+	}
+	end := i + len(word)
+	return end >= len(s) || !isJSIdentByte(s[end])
+}
+
+func isJSIdentByte(c byte) bool {
+	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
+
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// decodeStateError 在 JSON 语法错误时附带出错位置前后的片段，便于定位
+// 小红书新出现的 JS 字面量；片段限制在 160 字节内，不打印整页。
+func decodeStateError(state string, err error) error {
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		off := int(syn.Offset)
+		start := off - 80
+		if start < 0 {
+			start = 0
+		}
+		end := off + 80
+		if end > len(state) {
+			end = len(state)
+		}
+		if start < len(state) {
+			return fmt.Errorf("xhs: decode initial state: %w (near %q)", err, state[start:end])
+		}
+	}
+	return fmt.Errorf("xhs: decode initial state: %w", err)
 }
 
 // extractInitialState 从 marker 后的第一个 { 开始做括号配平，返回完整的
@@ -176,7 +285,7 @@ func ParseInitialState(html string) (*Note, error) {
 		} `json:"note"`
 	}
 	if err := json.Unmarshal([]byte(stateJSON), &top); err != nil {
-		return nil, fmt.Errorf("xhs: decode initial state: %w", err)
+		return nil, decodeStateError(stateJSON, err)
 	}
 
 	key, detail, err := firstDetail(top.Note.NoteDetailMap)
