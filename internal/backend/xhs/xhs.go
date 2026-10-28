@@ -36,6 +36,34 @@ const (
 // pageBackoff 是页面请求失败后每次重试前的等待时间。
 var pageBackoff = []time.Duration{300 * time.Millisecond, 600 * time.Millisecond}
 
+// directNoteHosts 是小红书直链站点根域名。短链域名（xhslink.com/.cn）
+// 不在此列：短链的 token 只存在于 302 目标里，不能做事前 token 预检。
+var directNoteHosts = []string{"xiaohongshu.com", "rednote.com"}
+
+// isDirectNoteURL 判断 rawURL 是否为小红书直链站点。
+func isDirectNoteURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, root := range directNoteHosts {
+		if host == root || strings.HasSuffix(host, "."+root) {
+			return true
+		}
+	}
+	return false
+}
+
+// isNotePageURL 判断 URL 路径是否为带作品 ID 的笔记页。
+func isNotePageURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return notePathPattern.MatchString(strings.TrimRight(u.Path, "/"))
+}
+
 // Downloader 是小红书后端的配置与入口。
 type Downloader struct {
 	HTTP    *httpclient.Client
@@ -54,9 +82,10 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 		return failed("下载客户端未配置")
 	}
 
-	// 必须先判定 token：裸 /explore/<id> 的 404 落地页与“笔记已删除”共用
-	// 页面与文案，先请求再判断会把缺参数误报成笔记不存在。
-	if !HasXsecToken(rawURL) {
+	// token 门禁只对直链生效：裸 /explore/<id> 的 404 落地页与“笔记已删除”
+	// 共用页面与文案，先请求再判断会把缺参数误报成笔记不存在。
+	// xhslink 短链的 token 只存在于 302 目标里，必须跳过本地预检先跟随跳转。
+	if isDirectNoteURL(rawURL) && !HasXsecToken(rawURL) {
 		return failed("链接必须带 xsec_token（请在 App 内重新分享该笔记获取完整链接）")
 	}
 
@@ -85,8 +114,13 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 		return failed(fmt.Sprintf("请求失败（HTTP %d）", status))
 	}
 	// 失效短链被 307 到首页：页面 200 正常、noteDetailMap 为空。
+	// 首页判定必须先于 token 判定，否则过期短链会被误报成缺 token。
 	if IsHomepageLanding(finalURL, html) {
 		return failed("分享链接已失效（重定向到了首页）——短链会过期，请在 App 内重新分享该笔记获取新链接")
+	}
+	// 短链跳到笔记页但 302 目标仍没有 token：此时才提示 token。
+	if isNotePageURL(finalURL) && !HasXsecToken(finalURL) {
+		return failed("链接缺少 xsec_token（请用 App 重新分享）")
 	}
 
 	note, err := ParseInitialState(html)

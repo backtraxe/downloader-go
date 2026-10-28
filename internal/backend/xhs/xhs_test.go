@@ -198,9 +198,21 @@ func newTestDownloader(t *testing.T) *Downloader {
 	}
 }
 
-func TestDownloadWritesNumberedImages(t *testing.T) {
+// newXSHSite 构造离线小红书测试站点。
+//
+// 测试用 127.0.0.1 代替 xhslink.com：非 xiaohongshu.com/rednote.com 的
+// host 走“短链”路径（不做事前 token 预检），/short/note 模拟 App 分享
+// 短链（token 只在 302 目标里），/short/expired 模拟过期短链落地首页。
+func newXSHSite(t *testing.T) *httptest.Server {
+	t.Helper()
 	var serverURL string
 	mux := http.NewServeMux()
+	mux.HandleFunc("/short/note", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, serverURL+"/explore/note1?xsec_token=fromshort", http.StatusFound)
+	})
+	mux.HandleFunc("/short/expired", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, serverURL+"/", http.StatusFound)
+	})
 	mux.HandleFunc("/explore/note1", func(w http.ResponseWriter, r *http.Request) {
 		state := map[string]any{"note": map[string]any{"noteDetailMap": map[string]any{
 			"note1": map[string]any{"note": map[string]any{
@@ -217,11 +229,22 @@ func TestDownloadWritesNumberedImages(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, pageHTML(t, state))
 	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, pageHTML(t, map[string]any{
+			"note": map[string]any{"noteDetailMap": map[string]any{}},
+		}))
+	})
 	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) {
 		writePNG(t, w)
 	})
 	server := newTLSServer(t, mux)
 	serverURL = server.URL
+	return server
+}
+
+func TestDownloadWritesNumberedImages(t *testing.T) {
+	server := newXSHSite(t)
 
 	d := newTestDownloader(t)
 	res := d.Download(context.Background(), server.URL+"/explore/note1?xsec_token=tok", "a1=abc", false)
@@ -258,25 +281,38 @@ func TestDownloadWritesNumberedImages(t *testing.T) {
 	}
 }
 
-func TestExpiredShortLinkMessage(t *testing.T) {
-	server := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, pageHTML(t, map[string]any{
-			"note": map[string]any{"noteDetailMap": map[string]any{}},
-		}))
-	}))
+func TestShortLinkResolvesToNote(t *testing.T) {
+	server := newXSHSite(t)
 
+	// 短链本身不必带 token：token 在 302 目标的 query 里。
 	d := newTestDownloader(t)
-	res := d.Download(context.Background(), server.URL+"/?xsec_token=expired", "a1=abc", false)
+	res := d.Download(context.Background(), server.URL+"/short/note", "a1=abc", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status=%s message=%s", res.Status, res.Message)
+	}
+	if len(res.Posts) != 1 || len(res.Posts[0].Files) != 2 {
+		t.Fatalf("unexpected posts: %+v", res.Posts)
+	}
+}
+
+func TestExpiredShortLinkMessage(t *testing.T) {
+	server := newXSHSite(t)
+
+	// 过期短链 302 到首页、noteDetailMap 为空：必须报“失效”，不能报 token。
+	d := newTestDownloader(t)
+	res := d.Download(context.Background(), server.URL+"/short/expired", "a1=abc", false)
 	if res.Status != result.Failed {
 		t.Fatalf("status=%s want failed", res.Status)
 	}
 	if !strings.Contains(res.Message, "失效") {
 		t.Fatalf("message=%q want 失效", res.Message)
 	}
+	if strings.Contains(res.Message, "xsec_token") {
+		t.Fatalf("message=%q must not mention xsec_token", res.Message)
+	}
 }
 
-func TestMissingTokenMessage(t *testing.T) {
+func TestDirectBareExploreNeedsToken(t *testing.T) {
 	d := newTestDownloader(t)
 	res := d.Download(context.Background(), "https://www.xiaohongshu.com/explore/1", "a1=abc", false)
 	if res.Status != result.Failed {
