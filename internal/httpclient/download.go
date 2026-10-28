@@ -2,13 +2,16 @@ package httpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/backtraxe/downloader-go/internal/fsutil"
@@ -105,8 +108,9 @@ func (c *Client) downloadOnce(ctx context.Context, rawURL, target string, opts D
 	defer resp.Close()
 
 	if resp.StatusCode >= 400 {
-		statusErr := statusError(resp)
-		return "", statusErr, IsTransientStatus(resp.StatusCode) || IsTransient(statusErr)
+		// 状态错误只看状态码：错误文本里带最终 URL，若再用 IsTransient
+		// 扫关键词，URL 中的 503/eof/timeout 会被误判为可重试。
+		return "", statusError(resp), IsTransientStatus(resp.StatusCode)
 	}
 
 	contentType := ""
@@ -184,7 +188,7 @@ func statusError(resp *Response) error {
 }
 
 // transientKeywords 是可重试错误的子串（大小写不敏感）。同时覆盖
-// requests/urllib3 与 curl 两族消息格式，以及常见 DNS/连接/管道错误。
+// requests/urllib3、curl 与 Go 原生 net/http 三族消息格式。
 var transientKeywords = []string{
 	"timeout",
 	"timed out",
@@ -192,11 +196,16 @@ var transientKeywords = []string{
 	"name or service not known",
 	"nodename nor servname",
 	"connection reset",
+	"connection was reset",
 	"connection aborted",
 	"connection broken",
 	"connection refused",
 	"max retries exceeded",
 	"temporary failure",
+	"no such host",
+	"server misbehaving",
+	"http2: server sent goaway",
+	"http2: client connection lost",
 	"eof",
 	"broken pipe",
 	"503",
@@ -204,10 +213,25 @@ var transientKeywords = []string{
 }
 
 // IsTransient 判断错误是否为值得重试的瞬时网络错误。
+//
+// 优先用 errors.As / errors.Is 识别结构化的 Go 原生错误（DNS 临时失败、
+// 连接重置/拒绝、响应体意外截断），再回退到跨语言的关键词匹配。
 func IsTransient(err error) bool {
 	if err == nil {
 		return false
 	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.Temporary() {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
 	msg := strings.ToLower(err.Error())
 	for _, keyword := range transientKeywords {
 		if strings.Contains(msg, keyword) {

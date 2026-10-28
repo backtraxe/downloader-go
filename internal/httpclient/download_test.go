@@ -3,13 +3,16 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -125,6 +128,29 @@ func TestDownloadStatusErrorIsNotRetried(t *testing.T) {
 	}
 	if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
 		t.Fatal("file should not be created")
+	}
+}
+
+func TestDownloadStatusErrorDoesNotRetryOnURLKeywords(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	p := filepath.Join(t.TempDir(), "001.jpg")
+	c := New(Options{Profile: Chrome120, Timeouts: DefaultTimeouts()})
+	// URL 含 503/eof/timeout，旧实现会因错误文本匹配 IsTransient 而误重试。
+	rawURL := srv.URL + "/503/eof/timeout"
+	_, err := c.DownloadFile(context.Background(), rawURL, p, DownloadOptions{
+		MaxRetries: 3,
+		Sleep:      func(time.Duration) {},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("hits=%d, status errors must not retry on URL keywords", hits)
 	}
 }
 
@@ -265,6 +291,17 @@ func TestIsTransient(t *testing.T) {
 		{errors.New("HTTP 404 Not Found"), false},
 		{errors.New("permission denied"), false},
 		{io.EOF, true},
+		// Go 原生解析器消息（CGO_ENABLED=0 下 DNS 失败的典型文本）
+		{errors.New("dial tcp: lookup x on 10.0.0.2:53: no such host"), true},
+		{errors.New("dial tcp: lookup x on 10.0.0.2:53: server misbehaving"), true},
+		{errors.New("read tcp 10.0.0.1:1234: connection was reset by peer"), true},
+		{errors.New("http2: server sent goaway"), true},
+		{errors.New("http2: client connection lost"), true},
+		// errors.As / errors.Is 路径
+		{&net.DNSError{Err: "server misbehaving", Name: "x", IsTemporary: true}, true},
+		{fmt.Errorf("request failed: %w", syscall.ECONNRESET), true},
+		{fmt.Errorf("dial failed: %w", syscall.ECONNREFUSED), true},
+		{io.ErrUnexpectedEOF, true},
 	}
 	for _, tc := range cases {
 		if got := IsTransient(tc.err); got != tc.want {
