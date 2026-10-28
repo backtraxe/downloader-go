@@ -15,38 +15,38 @@ bash install_termux.sh
 ```
 
 脚本会识别 `aarch64`、下载 `linux/arm64` Release、校验 `checksums.txt` 中的
-SHA256，并安装到 `$PREFIX/bin/downloader`（无写权限时安装到 `~/bin`）。
+SHA256，并安装到 `$PREFIX/bin/dl-go`（无写权限时安装到 `~/bin`）。
 
 常用选项：
 
 ```bash
 # 指定数据目录（写入 ~/.bashrc 与 ~/.zshrc 的 DOWNLOADER_HOME）
-bash install_termux.sh --data-dir "$HOME/downloader"
+bash install_termux.sh --data-dir "$HOME/dl-go-data"
 
 # 指定版本
 DOWNLOADER_VERSION=v0.1.0 bash install_termux.sh
 
 # 从 Python 版迁移：复制 cookies/ 与 config.json，
 # 新目录没有 download/ 时符号链接到旧目录的 download/
-bash install_termux.sh --data-dir "$HOME/downloader" \
-  --migrate-from "$HOME/old-downloader"
+bash install_termux.sh --data-dir "$HOME/dl-go-data" \
+  --migrate-from "$HOME/old-dl-go-data"
 ```
 
 脚本最后会检查 `yt-dlp` 与 `ffmpeg`，缺失时提示
-`pkg install yt-dlp ffmpeg`，并打印 `downloader version`。
+`pkg install yt-dlp ffmpeg`，并打印 `dl-go version`。
 
 ## 命令
 
 全局 `--data-dir` 必须写在子命令之前。
 
 ```bash
-downloader version                    # 版本信息
-downloader run [-f]                   # 从 stdin 逐行读取链接/分享文案；-f 强制重下
-downloader                            # 不带子命令时等同 run
-downloader bot                        # 启动 Telegram 长轮询机器人
-downloader upload <path> [--caption TEXT]   # 把文件或目录回传到配置的 chat_id
-downloader cookie import <site>       # 从 stdin 导入 Cookie 到 cookies/<site>.txt
-downloader cookie check [sites...]    # 离线检查 Cookie 必需键
+dl-go version                    # 版本信息
+dl-go run [-f]                   # 从 stdin 逐行读取链接/分享文案；-f 强制重下
+dl-go                            # 不带子命令时等同 run
+dl-go bot                        # 启动 Telegram 长轮询机器人
+dl-go upload <path> [--caption TEXT]   # 把文件或目录回传到配置的 chat_id
+dl-go cookie import <site>       # 从 stdin 导入 Cookie 到 cookies/<site>.txt
+dl-go cookie check [sites...]    # 离线检查 Cookie 必需键
 ```
 
 `bot` 与 `upload` 使用数据目录中的 `config.json`。首次运行 `bot` 时会生成模板，
@@ -91,7 +91,7 @@ pkg install yt-dlp ffmpeg
 ## 开发
 
 ```bash
-CGO_ENABLED=0 go build -o downloader ./cmd/downloader
+CGO_ENABLED=0 go build -o dl-go ./cmd/downloader
 CGO_ENABLED=0 go test ./...
 CGO_ENABLED=0 go vet ./...
 ```

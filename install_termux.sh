@@ -120,7 +120,7 @@ fetch() {
   fi
 }
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-$PREFIX/tmp}/downloader-install.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-$PREFIX/tmp}/dl-go-install.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 log "下载 ${RELEASE_URL}/checksums.txt ..."
@@ -143,16 +143,16 @@ log "校验 SHA256 ..."
   printf '%s\n' "$checksum_line" | sha256sum -c -
 )
 
-tar -xzf "$TMP_DIR/$archive" -C "$TMP_DIR" downloader ||
+tar -xzf "$TMP_DIR/$archive" -C "$TMP_DIR" dl-go ||
   die "解压 ${archive} 失败。"
-[ -f "$TMP_DIR/downloader" ] || die "归档中没有 downloader 二进制。"
+[ -f "$TMP_DIR/dl-go" ] || die "归档中没有 dl-go 二进制。"
 
 if [ -d "$PREFIX/bin" ] && [ -w "$PREFIX/bin" ]; then
-  install -m 0755 "$TMP_DIR/downloader" "$PREFIX/bin/downloader"
+  install -m 0755 "$TMP_DIR/dl-go" "$PREFIX/bin/dl-go"
   INSTALL_DIR="$PREFIX/bin"
 else
   mkdir -p "$HOME/bin"
-  install -m 0755 "$TMP_DIR/downloader" "$HOME/bin/downloader"
+  install -m 0755 "$TMP_DIR/dl-go" "$HOME/bin/dl-go"
   INSTALL_DIR="$HOME/bin"
   case ":$PATH:" in
     *":$HOME/bin:"*) ;;
@@ -162,7 +162,7 @@ else
       ;;
   esac
 fi
-log "已安装到 ${INSTALL_DIR}/downloader"
+log "已安装到 ${INSTALL_DIR}/dl-go"
 
 # shell_escape 把值转义为可安全放进双引号内的形式。
 shell_escape() {
@@ -246,11 +246,11 @@ else
 fi
 
 log "安装完成，当前版本："
-"$INSTALL_DIR/downloader" version
+"$INSTALL_DIR/dl-go" version
 
 if [ -n "$DATA_DIR" ]; then
-  log "配置文件: $DATA_DIR/config.json（首次运行 downloader bot 会生成模板）"
+  log "配置文件: $DATA_DIR/config.json（首次运行 dl-go bot 会生成模板）"
 else
-  log "配置文件: 当前目录下的 config.json（首次运行 downloader bot 会生成模板）"
+  log "配置文件: 当前目录下的 config.json（首次运行 dl-go bot 会生成模板）"
 fi
-log "下一步: downloader run（或 downloader bot，需先填写 config.json）"
+log "下一步: dl-go run（或 dl-go bot，需先填写 config.json）"

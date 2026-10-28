@@ -33,8 +33,8 @@ func normalizeCookieSite(raw string) (string, error) {
 
 // cookieUsage 是 cookie 子命令的用法提示。
 const cookieUsage = `用法：
-  downloader cookie import <site>     从 stdin 读取 Cookie 文本，写入 cookies/<site>.txt
-  downloader cookie check [sites...]  离线体检 Cookie 必需键（缺省检查 cookies/*.txt）`
+  dl-go cookie import <site>     从 stdin 读取 Cookie 文本，写入 cookies/<site>.txt
+  dl-go cookie check [sites...]  离线体检 Cookie 必需键（缺省检查 cookies/*.txt）`
 
 // runCookieCommand 分派 cookie 子命令。所有输出只包含文件路径与键名，
 // 绝不回显 Cookie 值。
@@ -58,7 +58,7 @@ func runCookieCommand(args []string, dataDir string, stdin io.Reader, stdout, st
 // <dataDir>/cookies/<site>.txt，只打印路径，不打印内容。
 func runCookieImport(args []string, dataDir string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "用法：downloader cookie import <site>")
+		fmt.Fprintln(stderr, "用法：dl-go cookie import <site>")
 		return 2
 	}
 	site, err := normalizeCookieSite(args[0])

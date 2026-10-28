@@ -6,7 +6,7 @@ release:
 
 builds:
   - main: ./cmd/downloader
-    binary: downloader
+    binary: dl-go
     env: [CGO_ENABLED=0]
     ldflags:
       - -s -w

@@ -19,7 +19,7 @@ func TestRunVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "downloader dev") {
+	if !strings.Contains(out.String(), "dl-go dev") {
 		t.Fatalf("unexpected version output: %q", out.String())
 	}
 }

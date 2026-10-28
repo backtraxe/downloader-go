@@ -111,7 +111,7 @@ func runWith(args []string, stdin io.Reader, stdout, stderr io.Writer, deps depe
 
 	switch args[0] {
 	case "version":
-		fmt.Fprintf(stdout, "downloader %s (commit %s, built %s)\n", version, commit, date)
+		fmt.Fprintf(stdout, "dl-go %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	case "run":
 		return runInteractive(args[1:], stdin, stdout, stderr, deps)
@@ -317,7 +317,7 @@ func parseUploadArgs(args []string) (path, caption string, err error) {
 		}
 	}
 	if path == "" {
-		return "", "", errors.New("用法：downloader upload <path> [--caption TEXT]")
+		return "", "", errors.New("用法：dl-go upload <path> [--caption TEXT]")
 	}
 	return path, caption, nil
 }

@@ -30,7 +30,7 @@ internal/tgapi         Telegram Bot API multipart 客户端
 
 ```bash
 # 构建与测试（所有 Go 命令都使用 CGO_ENABLED=0）
-CGO_ENABLED=0 go build -o downloader ./cmd/downloader
+CGO_ENABLED=0 go build -o dl-go ./cmd/downloader
 CGO_ENABLED=0 go test ./...
 CGO_ENABLED=0 go vet ./...
 
