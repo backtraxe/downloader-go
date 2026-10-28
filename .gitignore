@@ -1,6 +1,6 @@
 # 下载产物与凭据，绝不提交
-download/
-cookies/
+/download/
+/cookies/
 config.json
 *.part
 
