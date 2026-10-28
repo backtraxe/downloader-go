@@ -2,9 +2,10 @@
 //
 // 口径沿用 Python 版 core/downloader.py 的 dispatch_url：小红书、抖音走
 // 专用后端（需要 Cookie），bilibili/youtube/instagram/twitter 交给 yt-dlp，
-// 其余站点交给通用网页抓取。抖音短链先展开再判断图文/视频类型；短链服务端
-// 偶发不返回 302，因此带 3 次重试。后端函数由调用方注入，未接入的后端
-// （如 Task 15/16 完成前的小红书、抖音）保持 nil，Dispatch 返回明确失败。
+// 其余站点交给通用网页抓取。抖音短链先展开再判断图文/视频类型，yt-dlp 站点
+// 的短链也先展开再交给后端；短链服务端偶发不返回 302，因此带 3 次重试。
+// 后端函数由调用方注入，未接入的后端（如 Task 15/16 完成前的小红书、抖音）
+// 保持 nil，Dispatch 返回明确失败。
 package dispatch
 
 import (
@@ -55,9 +56,10 @@ type Dispatcher struct {
 
 // Dispatch 识别站点并调用对应后端，整个调用共用一个请求日志作用域。
 //
-// 小红书与抖音缺少 Cookie 时直接返回 failed，并给出 Cookie 路径提示；
-// 抖音短链先展开（3 次重试）再判断图文/视频，展开失败或非作品页时与
-// Python 版一致回落到 yt-dlp。force 原样传给后端。
+// 未接入的后端先于 Cookie 检查返回 failed，避免缺 Cookie 掩盖真实原因。
+// 小红书与抖音缺少 Cookie 时返回 failed 并给出 Cookie 路径提示；抖音短链
+// 先展开（3 次重试）再判断图文/视频，展开失败或非作品页时沿用已展开的
+// URL 回落到 yt-dlp。yt-dlp 站点同样先展开短链再交给后端。force 原样转发。
 func (d *Dispatcher) Dispatch(ctx context.Context, rawURL string, force bool) result.Result {
 	if ctx == nil {
 		ctx = context.Background()
@@ -69,12 +71,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, rawURL string, force bool) re
 
 	switch site := sites.Detect(rawURL); site {
 	case "xiaohongshu":
+		if d.Handlers.XHS == nil {
+			return notWired("小红书")
+		}
 		cookie, failure, ok := d.loadCookie("xiaohongshu", "小红书")
 		if !ok {
 			return failure
-		}
-		if d.Handlers.XHS == nil {
-			return notWired("小红书")
 		}
 		return d.Handlers.XHS(ctx, rawURL, cookie, force)
 
@@ -82,26 +84,27 @@ func (d *Dispatcher) Dispatch(ctx context.Context, rawURL string, force bool) re
 		resolved := urlutil.ResolveShortLinkWithRetry(ctx, d.HTTP, rawURL, shortLinkAttempts, nil)
 		switch {
 		case douyinNotePattern.MatchString(resolved):
-			cookie, failure, ok := d.loadCookie("douyin", "抖音")
-			if !ok {
-				return failure
-			}
 			if d.Handlers.DouyinNote == nil {
 				return notWired("抖音图文")
 			}
-			return d.Handlers.DouyinNote(ctx, resolved, cookie, force)
-		case douyinVideoPattern.MatchString(resolved):
 			cookie, failure, ok := d.loadCookie("douyin", "抖音")
 			if !ok {
 				return failure
 			}
+			return d.Handlers.DouyinNote(ctx, resolved, cookie, force)
+		case douyinVideoPattern.MatchString(resolved):
 			if d.Handlers.DouyinVideo == nil {
 				return notWired("抖音视频")
 			}
+			cookie, failure, ok := d.loadCookie("douyin", "抖音")
+			if !ok {
+				return failure
+			}
 			return d.Handlers.DouyinVideo(ctx, resolved, cookie, force)
 		}
-		// 非图文/视频页（含短链展开失败）：与 Python 版一致交给 yt-dlp。
-		return d.ytdlp(ctx, rawURL, force)
+		// 非图文/视频页（含短链展开失败）：与 Python 版一致交给 yt-dlp，
+		// 沿用已经展开的 URL，避免重复请求短链服务。
+		return d.ytdlpResolved(ctx, resolved, force)
 
 	case "bilibili", "youtube", "instagram", "twitter":
 		return d.ytdlp(ctx, rawURL, force)
@@ -114,12 +117,25 @@ func (d *Dispatcher) Dispatch(ctx context.Context, rawURL string, force bool) re
 	}
 }
 
-// ytdlp 调用 yt-dlp 后端，未接入时返回明确失败。
+// ytdlp 先展开短链再调用 yt-dlp 后端，未接入时返回明确失败。
+//
+// Termux 等环境下 yt-dlp 依赖的 Go/Python socket 解析对 b23.tv、youtu.be
+// 一类短链域名可能失败，因此与 Python 版一致先由本包跟一遍重定向；展开
+// 失败时保留原始 URL 交给 yt-dlp 兜底。
 func (d *Dispatcher) ytdlp(ctx context.Context, rawURL string, force bool) result.Result {
 	if d.Handlers.YTDLP == nil {
 		return notWired("yt-dlp")
 	}
-	return d.Handlers.YTDLP(ctx, rawURL, force)
+	resolved := urlutil.ResolveShortLinkWithRetry(ctx, d.HTTP, rawURL, shortLinkAttempts, nil)
+	return d.Handlers.YTDLP(ctx, resolved, force)
+}
+
+// ytdlpResolved 把已经展开过的 URL 直接交给 yt-dlp 后端。
+func (d *Dispatcher) ytdlpResolved(ctx context.Context, resolvedURL string, force bool) result.Result {
+	if d.Handlers.YTDLP == nil {
+		return notWired("yt-dlp")
+	}
+	return d.Handlers.YTDLP(ctx, resolvedURL, force)
 }
 
 // loadCookie 读取站点 Cookie 并转换成请求头格式。

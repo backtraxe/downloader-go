@@ -216,10 +216,83 @@ func TestDispatchKnownAndUnknownSites(t *testing.T) {
 	}
 }
 
-func TestDispatchNilHandlersFailClearly(t *testing.T) {
+func TestDispatchYTDLPRouteExpandsShortLinks(t *testing.T) {
+	var target string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/short" {
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	cases := []struct {
+		name   string
+		raw    string
+		target string
+	}{
+		{"bilibili", "http://b23.tv/short", "http://www.bilibili.com/video/BV1"},
+		{"youtube", "http://youtu.be/short", "http://www.youtube.com/watch?v=1"},
+		{"twitter", "http://t.co/short", "http://x.com/user/status/1"},
+		{"instagram", "http://instagr.am/short", "http://www.instagram.com/p/1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target = tc.target
+			var gotURL string
+			d := &Dispatcher{
+				HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome120, Timeouts: httpclient.DefaultTimeouts(), Proxy: srv.URL}),
+				DataDir: t.TempDir(),
+				Handlers: Handlers{
+					YTDLP: func(_ context.Context, url string, _ bool) result.Result {
+						gotURL = url
+						return result.Result{Status: result.Downloaded}
+					},
+				},
+			}
+			if got := d.Dispatch(context.Background(), tc.raw, false); got.Status != result.Downloaded {
+				t.Fatalf("%+v", got)
+			}
+			if gotURL != tc.target {
+				t.Fatalf("url=%q want %q", gotURL, tc.target)
+			}
+		})
+	}
+}
+
+func TestDispatchDouyinFallthroughUsesResolvedURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host == "v.douyin.com" {
+			http.Redirect(w, r, "http://www.douyin.com/user/someone", http.StatusFound)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	var gotURL string
+	d := &Dispatcher{
+		HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome120, Timeouts: httpclient.DefaultTimeouts(), Proxy: srv.URL}),
+		DataDir: t.TempDir(),
+		Handlers: Handlers{
+			YTDLP: func(_ context.Context, url string, _ bool) result.Result {
+				gotURL = url
+				return result.Result{Status: result.Downloaded}
+			},
+		},
+	}
+	if got := d.Dispatch(context.Background(), "http://v.douyin.com/short", false); got.Status != result.Downloaded {
+		t.Fatalf("%+v", got)
+	}
+	if want := "http://www.douyin.com/user/someone"; gotURL != want {
+		t.Fatalf("url=%q want %q", gotURL, want)
+	}
+}
+
+func TestDispatchNilHandlersFailBeforeCookieCheck(t *testing.T) {
+	// 未接入的后端即使没有 Cookie 文件，也应报告“尚未接入”而不是缺 Cookie。
 	dir := t.TempDir()
-	writeCookie(t, dir, "xiaohongshu", "a1=abc")
-	writeCookie(t, dir, "douyin", "UIFID=u")
 
 	cases := []struct {
 		name string
