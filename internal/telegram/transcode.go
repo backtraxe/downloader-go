@@ -43,6 +43,8 @@ type Runner func(ctx context.Context, name string, args ...string) (stdout, stde
 // 产物落在 WorkDir。ffmpeg 缺失、执行失败或压缩后仍超标时返回原始路径
 // 且 asDocument=true，由调用方降级为文件发送；这种情况下不返回 error。
 // 普通照片原样返回。
+//
+// 返回的 prepared 与 path 不同时是临时产物，由调用方负责删除。
 func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared string, asDocument bool, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -72,6 +74,12 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, wi
 	if err != nil {
 		return "", false
 	}
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(out)
+		}
+	}()
 	base := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", path, "-frames:v", "1"}
 
 	if heic {
@@ -80,7 +88,12 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, wi
 		if err := u.runFFmpeg(ctx, args); err != nil {
 			return "", false
 		}
-		if sizeAtMost(out, maxPhotoBytes) {
+		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限。
+		if convertedW, convertedH, known := photoDimensions(out); known {
+			width, height, dimsKnown = convertedW, convertedH, true
+		}
+		if sizeAtMost(out, maxPhotoBytes) && (!dimsKnown || width+height <= maxPhotoDimSum) {
+			success = true
 			return out, true
 		}
 	}
@@ -107,6 +120,7 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, wi
 				return "", false
 			}
 			if sizeAtMost(out, maxPhotoBytes) {
+				success = true
 				return out, true
 			}
 		}
@@ -123,7 +137,8 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, wi
 //
 // 先用 ffprobe 读取时长（秒），按 (targetBytes*8/duration) - 96kbps 计算
 // 视频码率，下限 200kbps；输出到 WorkDir 的 .mp4。ffprobe/ffmpeg 缺失、
-// 时长无法解析或执行失败都返回 error，调用方据此跳过该文件。
+// 时长无法解析或执行失败都返回 error，调用方据此跳过该文件。返回值是
+// 临时产物，由调用方负责删除。
 func (u *Uploader) CompressVideo(ctx context.Context, path string, targetBytes int64) (string, error) {
 	probe := u.FFprobe
 	if probe == "" {
@@ -154,6 +169,12 @@ func (u *Uploader) CompressVideo(ctx context.Context, path string, targetBytes i
 	if err != nil {
 		return "", err
 	}
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(out)
+		}
+	}()
 	if err := u.runFFmpeg(ctx, []string{
 		"-y",
 		"-i", path,
@@ -168,6 +189,7 @@ func (u *Uploader) CompressVideo(ctx context.Context, path string, targetBytes i
 	if _, err := os.Stat(out); err != nil {
 		return "", fmt.Errorf("telegram: ffmpeg produced no output: %w", err)
 	}
+	success = true
 	return out, nil
 }
 

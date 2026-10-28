@@ -93,6 +93,9 @@ func BuildCaption(site, author, title string) string {
 	if len(tags) == 0 {
 		return title
 	}
+	if title == "" {
+		return strings.Join(tags, " ")
+	}
 	return strings.Join(tags, " ") + "\n" + title
 }
 

@@ -3,6 +3,8 @@ package telegram
 import (
 	"context"
 	"errors"
+	"image"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,46 @@ func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
 	}
 	if st, err := os.Stat(got); err != nil || st.Size() == 0 {
 		t.Fatalf("output missing: %v", err)
+	}
+}
+
+func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "wide.heic")
+	if err := os.WriteFile(src, []byte("heic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	call := 0
+	u := &Uploader{
+		FFmpeg:  "ffmpeg",
+		WorkDir: t.TempDir(),
+		Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+			calls = append(calls, append([]string{name}, args...))
+			// 首次转换产出宽高和超限但体积很小的 JPEG；缩放阶梯再产出小图。
+			w, h := 10000, 1
+			if call > 0 {
+				w, h = 100, 100
+			}
+			call++
+			out := args[len(args)-1]
+			f, err := os.Create(out)
+			if err != nil {
+				return nil, nil, err
+			}
+			defer f.Close()
+			return nil, nil, jpeg.Encode(f, image.NewRGBA(image.Rect(0, 0, w, h)), nil)
+		},
+	}
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || asDoc || !strings.HasSuffix(got, ".jpg") {
+		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+	if len(calls) < 2 {
+		t.Fatalf("converted JPEG dimensions were not re-checked: %v", calls)
+	}
+	if !strings.Contains(joinCall(calls[1]), "-vf") {
+		t.Fatalf("scale ladder not used: %v", calls)
 	}
 }
 

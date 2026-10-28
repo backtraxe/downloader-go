@@ -32,8 +32,9 @@ type Uploader struct {
 // skipped。其余文件逐个按 document 发送。相册每组的首项带
 // BuildCaption 生成的说明。
 func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (sent int, skipped []string, err error) {
+	skipped = []string{}
 	if u.API == nil {
-		return 0, nil, errors.New("telegram: nil API client")
+		return 0, skipped, errors.New("telegram: nil API client")
 	}
 	caption := BuildCaption(post.Site, post.Author, post.Title)
 
@@ -61,7 +62,11 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 				generated = append(generated, prepared)
 			}
 			if asDocument {
-				documents = append(documents, path)
+				if info.Size() > maxUploadBytes {
+					skipped = append(skipped, path)
+				} else {
+					documents = append(documents, path)
+				}
 				continue
 			}
 			media = append(media, FileInfo{Path: prepared, Size: info.Size(), Kind: Photo})
@@ -84,11 +89,32 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 			}
 			media = append(media, FileInfo{Path: sendPath, Size: info.Size(), Kind: Video})
 		default:
-			documents = append(documents, path)
+			if info.Size() > maxUploadBytes {
+				skipped = append(skipped, path)
+			} else {
+				documents = append(documents, path)
+			}
 		}
 	}
 
 	for _, group := range PlanGroups(media, albumSize) {
+		if len(group) == 1 {
+			// Bot API 的 sendMediaGroup 要求 2–10 项，单项走专用方法。
+			file := group[0]
+			method, field := "sendPhoto", "photo"
+			if file.Kind == Video {
+				method, field = "sendVideo", "video"
+			}
+			fields := map[string]string{"chat_id": chatID}
+			if caption != "" {
+				fields["caption"] = caption
+			}
+			if _, err := u.API.CallMultipart(ctx, method, fields, map[string]string{field: file.Path}); err != nil {
+				return sent, skipped, err
+			}
+			sent++
+			continue
+		}
 		items := make([]tgapi.Media, 0, len(group))
 		for i, file := range group {
 			item := tgapi.Media{Kind: kindName(file.Kind), Path: file.Path}
@@ -114,8 +140,5 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 		sent++
 	}
 
-	if skipped == nil {
-		skipped = []string{}
-	}
 	return sent, skipped, nil
 }

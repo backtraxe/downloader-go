@@ -26,6 +26,8 @@ type uploadRecorder struct {
 	mu        sync.Mutex
 	albums    [][]albumItem
 	documents []string // captions, in order
+	singles   []string // sendPhoto/sendVideo captions, in order
+	paths     []string // request paths, in order
 }
 
 func (r *uploadRecorder) handler(w http.ResponseWriter, req *http.Request) {
@@ -43,6 +45,7 @@ func (r *uploadRecorder) handler(w http.ResponseWriter, req *http.Request) {
 		}
 		r.mu.Lock()
 		r.albums = append(r.albums, items)
+		r.paths = append(r.paths, req.URL.Path)
 		r.mu.Unlock()
 		result := make([]map[string]any, len(items))
 		for i := range result {
@@ -56,6 +59,17 @@ func (r *uploadRecorder) handler(w http.ResponseWriter, req *http.Request) {
 		}
 		r.mu.Lock()
 		r.documents = append(r.documents, req.FormValue("caption"))
+		r.paths = append(r.paths, req.URL.Path)
+		r.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": 99}})
+	case strings.HasSuffix(req.URL.Path, "/sendPhoto"), strings.HasSuffix(req.URL.Path, "/sendVideo"):
+		if err := req.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.mu.Lock()
+		r.singles = append(r.singles, req.FormValue("caption"))
+		r.paths = append(r.paths, req.URL.Path)
 		r.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": 99}})
 	default:
@@ -143,5 +157,68 @@ func TestSendGroupsAlbumsAndSkipsOversizedVideo(t *testing.T) {
 		if caption != wantCaption {
 			t.Fatalf("document caption=%q", caption)
 		}
+	}
+}
+
+func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "one.jpg")
+	if err := os.WriteFile(src, []byte("jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &uploadRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	u := &Uploader{
+		API:     &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()},
+		WorkDir: t.TempDir(),
+	}
+	sent, skipped, err := u.Send(context.Background(), "123", result.Post{
+		Site: "douyin", Author: "甲", Title: "标题", Files: []string{src},
+	})
+	if err != nil || sent != 1 || len(skipped) != 0 {
+		t.Fatalf("sent=%d skipped=%v err=%v", sent, skipped, err)
+	}
+	if len(rec.paths) != 1 || rec.paths[0] != "/bottest/sendPhoto" {
+		t.Fatalf("paths=%v want [/bottest/sendPhoto]", rec.paths)
+	}
+	if len(rec.singles) != 1 || rec.singles[0] != "#甲 #douyin\n标题" {
+		t.Fatalf("singles=%v", rec.singles)
+	}
+}
+
+func TestSendSkipsOversizedDocument(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.bin")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxUploadBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &uploadRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer srv.Close()
+
+	u := &Uploader{API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}}
+	sent, skipped, err := u.Send(context.Background(), "123", result.Post{Files: []string{big}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent != 0 {
+		t.Fatalf("sent=%d", sent)
+	}
+	if len(skipped) != 1 || skipped[0] != big {
+		t.Fatalf("skipped=%v want [%s]", skipped, big)
+	}
+	if len(rec.paths) != 0 {
+		t.Fatalf("unexpected API requests: %v", rec.paths)
 	}
 }

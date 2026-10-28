@@ -34,6 +34,7 @@ func TestBuildCaptionOmitsEmptyTags(t *testing.T) {
 	}{
 		{"douyin", "", "标题", "#douyin\n标题"},
 		{"", "甲", "标题", "#甲\n标题"},
+		{"douyin", "", "", "#douyin"},
 		{"", "", "标题", "标题"},
 		{"", "", "", ""},
 	}
