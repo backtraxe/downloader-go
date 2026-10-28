@@ -1803,6 +1803,16 @@ func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
     if err != nil || asDoc || !strings.HasSuffix(got, ".jpg") { t.Fatalf("%s %v %v", got, asDoc, err) }
     if len(calls) != 1 || !strings.Contains(strings.Join(calls[0], " "), "-frames:v") { t.Fatalf("%v", calls) }
 }
+
+func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
+    // httptest API 记录请求路径；Post 只有一个 jpg；
+    // 断言调用的是 sendPhoto，而不是 sendMediaGroup。
+}
+
+func TestSendSkipsOversizedDocument(t *testing.T) {
+    // 创建一个 >50MB 的 .bin（os.Truncate 稀疏文件）；Post 只含该文件；
+    // 断言返回 skipped 含该路径，且 API 没有收到 sendDocument。
+}
 ```
 
 - [ ] **Step 3: 运行测试确认失败**
@@ -1813,9 +1823,9 @@ Expected: FAIL。
 - [ ] **Step 4: 实现**
 
 - `PlanGroups` 只把 `Photo`/`Video` 编入相册，按输入顺序、每组 ≤10；`Document` 单独发送。
-- `PreparePhoto`：HEIC 或 >10MB 或尺寸和 >10000 时用 ffmpeg 转/压 JPEG；ffmpeg 不存在或失败 → `asDocument=true`。
+- `PreparePhoto`：HEIC 或 >10MB 或尺寸和 >10000 时用 ffmpeg 转/压 JPEG；ffmpeg 不存在或失败 → `asDocument=true`。**HEIC 转出的 JPEG 也要重新检查尺寸和**：>10000 时继续走缩放阶梯，不能只看体积。
 - `CompressVideo`：`ffprobe` 取时长，计算 `视频码率 = (49MB*8/duration) - 96kbps`，下限 200kbps；`ffmpeg -y -i in -c:v libx264 -b:v <rate> -c:a aac -b:a 96k out.mp4`；没有 ffmpeg/ffprobe 返回错误。
-- `Send`：逐个 Post 分组；>50MB 视频尝试压缩，仍超限则加入 `skipped`；照片超限且转码失败按 document；caption 只放第一项。
+- `Send`：逐个 Post 分组；>50MB 视频尝试压缩，仍超限则加入 `skipped`；照片超限且转码失败按 document；**任何将按 document 发送的文件（含转码失败的照片）如果 >50MB，直接加入 `skipped`，不要调用 API**；caption 只放第一项。**单个 Photo/Video 不能用 `SendMediaGroup`（Bot API 要求 2–10 项）**：走 `sendPhoto`/`sendVideo`（`CallMultipart`），带 caption。
 
 - [ ] **Step 5: 运行测试确认通过**
 
