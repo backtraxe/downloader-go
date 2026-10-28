@@ -1,7 +1,6 @@
 package cookies
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +41,49 @@ func TestCheckDouyinGate(t *testing.T) {
 	if len(Check("UIFID=y", "douyin")) != 1 {
 		t.Fatalf("missing ttwid/sessionid not reported")
 	}
+	if len(Check("UIFID=; ttwid=", "douyin")) == 0 {
+		t.Fatal("empty values must count as gaps")
+	}
+	if len(Check("a1=short; webId=x", "xiaohongshu")) == 0 {
+		t.Fatal("short a1 must be reported")
+	}
+}
+
+func TestJSONArrays(t *testing.T) {
+	for _, raw := range []string{
+		`[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]`,
+		`{"cookies":[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]}`,
+	} {
+		m, f, err := ParseMap(raw)
+		if err != nil || f != JSONCookies || m["a1"] != "abc" {
+			t.Fatalf("%s: %v %v %v", raw, m, f, err)
+		}
+	}
+}
+
+func TestImportPerSiteFormat(t *testing.T) {
+	dir := t.TempDir()
+	p, err := Import(dir, "bilibili", strings.NewReader("Cookie: SESSDATA=abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.HasPrefix(string(data), "# Netscape HTTP Cookie File") {
+		t.Fatalf("%s", data)
+	}
+	if !strings.Contains(string(data), ".bilibili.com\tTRUE\t/\tTRUE\t4070908800\tSESSDATA\tabc") {
+		t.Fatalf("%s", data)
+	}
+
+	p, err = Import(dir, "xiaohongshu", strings.NewReader(
+		`[{"name":"a1","value":"abc","domain":".xiaohongshu.com"},{"name":"third","value":"x","domain":".evil.com"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p)
+	if !strings.Contains(string(data), "a1=abc") || strings.Contains(string(data), "third=") {
+		t.Fatalf("%s", data)
+	}
 }
 
 func TestDetectFormats(t *testing.T) {
@@ -53,7 +95,8 @@ func TestDetectFormats(t *testing.T) {
 		{"json object", `{"a1":"abc","web_session":"def"}`, JSONCookies},
 		{"empty json object", `{}`, JSONCookies},
 		{"invalid json", `{"a1":`, Header},
-		{"json array is not a map", `[{"name":"a1","value":"abc"}]`, Header},
+		{"json array", `[{"name":"a1","value":"abc"}]`, JSONCookies},
+		{"wrapped json array", `{"cookies":[{"name":"a1","value":"abc"}]}`, JSONCookies},
 		{"header", "a1=abc; web_session=def", Header},
 		{"header with cookie label", "Cookie: a1=abc", Header},
 		{"netscape", "# comment\n.douyin.com\tTRUE\t/\tTRUE\t1\tUIFID\tu1\n", Netscape},
@@ -64,6 +107,29 @@ func TestDetectFormats(t *testing.T) {
 		if got := Detect(tc.text); got != tc.want {
 			t.Errorf("%s: Detect = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestParseMapJSON(t *testing.T) {
+	m, format, err := ParseMap(`{"a1":"abc"}`)
+	if err != nil || format != JSONCookies || m["a1"] != "abc" {
+		t.Fatalf("format=%v map=%v err=%v", format, m, err)
+	}
+
+	// 数组内同名首个生效；空值保留为空串（由 Check 判定为缺口）。
+	raw := `[{"name":"a1","value":"first"},{"name":"a1","value":"second"},{"name":"empty","value":""},{"name":"","value":"skip"}]`
+	m, format, err = ParseMap(raw)
+	if err != nil || format != JSONCookies {
+		t.Fatalf("format=%v err=%v", format, err)
+	}
+	if m["a1"] != "first" {
+		t.Fatalf("first occurrence should win: %v", m)
+	}
+	if value, ok := m["empty"]; !ok || value != "" {
+		t.Fatalf("empty value must be preserved: %v", m)
+	}
+	if _, ok := m[""]; ok || len(m) != 2 {
+		t.Fatalf("map=%v", m)
 	}
 }
 
@@ -150,7 +216,7 @@ func TestToNetscape(t *testing.T) {
 		t.Fatalf("ToNetscape =\n%q\nwant\n%q", got, want)
 	}
 
-	// Netscape 进 Netscape 出：不重复带头、不丢 cookie。
+	// 已有 Netscape 内容重新转换：不重复带头、不丢 cookie。
 	if got := ToNetscape("UIFID=u1", ".douyin.com"); strings.Count(got, "# Netscape HTTP Cookie File") != 1 {
 		t.Fatalf("ToNetscape = %q", got)
 	}
@@ -159,11 +225,12 @@ func TestToNetscape(t *testing.T) {
 func TestImport(t *testing.T) {
 	dir := t.TempDir()
 
-	path, err := Import(dir, "douyin", strings.NewReader("UIFID=u; ttwid=t"))
+	// 未知站点保留请求头原文。
+	path, err := Import(dir, "example", strings.NewReader("UIFID=u; ttwid=t"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPath := filepath.Join(dir, "cookies", "douyin.txt")
+	wantPath := filepath.Join(dir, "cookies", "example.txt")
 	if path != wantPath {
 		t.Fatalf("path = %q, want %q", path, wantPath)
 	}
@@ -182,11 +249,11 @@ func TestImport(t *testing.T) {
 		t.Fatalf("perm = %o, want 600", perm)
 	}
 
-	// JSON 对象统一转成 Cookie 头字符串写入。
-	if _, err := Import(dir, "xiaohongshu", strings.NewReader(`{"web_session":"def","a1":"abc"}`)); err != nil {
+	// 未知站点的 JSON 对象按键名排序转成 Cookie 头字符串。
+	if _, err := Import(dir, "example", strings.NewReader(`{"web_session":"def","a1":"abc"}`)); err != nil {
 		t.Fatal(err)
 	}
-	data, err = os.ReadFile(filepath.Join(dir, "cookies", "xiaohongshu.txt"))
+	data, err = os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,29 +261,27 @@ func TestImport(t *testing.T) {
 		t.Fatalf("json content = %q", got)
 	}
 
-	// Netscape 原样保存。
+	// 需要 Netscape 的站点收到 Netscape 输入时原样保存。
 	netscape := "# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tTRUE\t4070908800\tUIFID\tu1"
-	if _, err := Import(dir, "douyin-netscape", strings.NewReader(netscape)); err != nil {
+	if _, err := Import(dir, "douyin", strings.NewReader(netscape)); err != nil {
 		t.Fatal(err)
 	}
-	data, err = os.ReadFile(filepath.Join(dir, "cookies", "douyin-netscape.txt"))
+	data, err = os.ReadFile(filepath.Join(dir, "cookies", "douyin.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), "# Netscape HTTP Cookie File\n") {
+	if string(data) != netscape+"\n" {
 		t.Fatalf("netscape content = %q", data)
 	}
 
 	if _, err := Import(dir, "douyin", strings.NewReader("  \n")); err == nil {
 		t.Fatal("empty input should fail")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "cookies", "missing.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unexpected file: %v", err)
-	}
 }
 
 func TestCheckXiaohongshu(t *testing.T) {
-	if issues := Check("a1=abc; webId=w", "xiaohongshu"); len(issues) != 0 {
+	a1 := strings.Repeat("a", xhsA1MinLen)
+	if issues := Check("a1="+a1+"; webId=w", "xiaohongshu"); len(issues) != 0 {
 		t.Fatalf("complete cookie reported: %+v", issues)
 	}
 
@@ -225,13 +290,30 @@ func TestCheckXiaohongshu(t *testing.T) {
 		t.Fatalf("issues = %+v", issues)
 	}
 
-	issues = Check("a1=abc", "xiaohongshu")
+	// a1 存在但过短同样算缺口。
+	issues = Check("a1=short; webId=x", "xiaohongshu")
+	if len(issues) != 1 || issues[0].Key != "a1" {
+		t.Fatalf("short a1 issues = %+v", issues)
+	}
+
+	// 空值 webId 不能顶替 web_session。
+	issues = Check("a1="+a1+"; webId=", "xiaohongshu")
+	if len(issues) != 1 || issues[0].Key != "webId/web_session" {
+		t.Fatalf("empty webId issues = %+v", issues)
+	}
+
+	issues = Check("a1="+a1, "xiaohongshu")
 	if len(issues) != 1 || issues[0].Key != "webId/web_session" || !issues[0].Missing {
 		t.Fatalf("issues = %+v", issues)
 	}
 
 	if issues := Check("", "xiaohongshu"); len(issues) != 2 {
 		t.Fatalf("empty cookie should report both gaps: %+v", issues)
+	}
+
+	// 长度恰好 30 位视为足量；29 位算缺口。
+	if issues := Check("a1="+a1[:xhsA1MinLen-1]+"; web_session=s", "xiaohongshu"); len(issues) != 1 || issues[0].Key != "a1" {
+		t.Fatalf("29-char a1 issues = %+v", issues)
 	}
 }
 
@@ -243,14 +325,22 @@ func TestCheckOtherSite(t *testing.T) {
 	}
 }
 
-func TestCheckUsesKeyNamesOnly(t *testing.T) {
-	// 体检按键名判定，绝不回显值；空值键名仍算存在（值不参与判定）。
+func TestCheckTreatsEmptyValuesAsGaps(t *testing.T) {
 	issues := Check("UIFID=; ttwid=", "douyin")
-	if len(issues) != 0 {
+	if len(issues) != 2 {
+		t.Fatalf("empty values should be two gaps: %+v", issues)
+	}
+	if issues[0].Key != "UIFID/UIFID_TEMP" || issues[1].Key != "ttwid/sessionid" {
+		t.Fatalf("unexpected keys: %+v", issues)
+	}
+
+	if issues := Check("UIFID=u; ttwid=", "douyin"); len(issues) != 1 || issues[0].Key != "ttwid/sessionid" {
 		t.Fatalf("issues = %+v", issues)
 	}
-	for _, issue := range Check("ttwid=x", "douyin") {
-		if strings.Contains(issue.Message, "ttwid=x") || strings.Contains(issue.Key, "=") {
+
+	// 提示只提键名，绝不回显 Cookie 值。
+	for _, issue := range Check("UIFID=secret-value; ttwid=", "douyin") {
+		if strings.Contains(issue.Message, "secret-value") || strings.Contains(issue.Key, "=") {
 			t.Fatalf("issue leaks value: %+v", issue)
 		}
 	}

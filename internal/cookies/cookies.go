@@ -5,7 +5,8 @@
 // 保持一致：
 //   - Header：浏览器复制的 `Cookie:` 请求头整段（行首标签可有可无）；
 //   - Netscape：yt-dlp 使用的 7 列 Tab 文件；
-//   - JSONCookies：Cookie-Editor 导出的 JSON 对象。
+//   - JSONCookies：Cookie-Editor 导出的 JSON（顶层数组、{"cookies":[...]}
+//     包裹或 name → value 对象）。
 //
 // 解析与体检只关心键名，绝不打印、记录或返回 Cookie 值以外的调试信息；
 // 导入写出的文件权限固定 0600。
@@ -34,26 +35,48 @@ const (
 	JSONCookies
 )
 
-// netscapeExpiry 是 Netscape 行的固定过期时间（4070908800，约 2098 年），
-// 与 Python 版 core/utils.py 的 _NETSCAPE_EXPIRE 一致：会话 Cookie 没有
-// 真实过期时间，用远期固定值兜底。
-const netscapeExpiry = "4070908800"
+const (
+	// netscapeExpiry 是 Netscape 行的固定过期时间（4070908800，约 2098 年），
+	// 与 Python 版 core/utils.py 的 _NETSCAPE_EXPIRE 一致：会话 Cookie 没有
+	// 真实过期时间，用远期固定值兜底。
+	netscapeExpiry = "4070908800"
+	// cookieLabel 是浏览器复制 Cookie 时可能带上的行首标签。
+	cookieLabel = "cookie:"
+	// xhsA1MinLen 是小红书 a1 的足量长度下限（生态口径正常约 52 位）。
+	xhsA1MinLen = 30
+	// xhsCookieDomain 用于导入小红书 JSON 时过滤第三方域 cookie。
+	xhsCookieDomain = "xiaohongshu.com"
+)
 
-// cookieLabel 是浏览器复制 Cookie 时可能带上的行首标签。
-const cookieLabel = "cookie:"
+// netscapeSites 是 cookies 文件需写成 Netscape 格式的站点及其 cookie 域；
+// yt-dlp 只认 Netscape 文件，其余站点写请求头。
+var netscapeSites = map[string]string{
+	"douyin":    ".douyin.com",
+	"bilibili":  ".bilibili.com",
+	"youtube":   ".youtube.com",
+	"instagram": ".instagram.com",
+	"twitter":   ".x.com",
+}
+
+// jsonEntry 是 Cookie-Editor 一类扩展导出的单个 cookie 对象。
+type jsonEntry struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Domain string `json:"domain"`
+}
 
 // Detect 识别 Cookie 文本格式。
 //
-// 判定顺序：先尝试按 JSON 对象解码（成功即 JSONCookies）；否则任一非注释行
-// 按 Tab 切分后有至少 7 个字段即 Netscape；其余一律按 Header。空文本视为
-// Header，由 ParseMap 返回空映射。
+// 判定顺序：先尝试 JSON（顶层数组、顶层对象、{"cookies":[...]} 包裹都算
+// JSONCookies，Cookie-Editor 默认导出是数组）；否则任一非注释行按 Tab 切分
+// 后有至少 7 个字段即 Netscape；其余一律按 Header。空文本视为 Header，由
+// ParseMap 返回空映射。
 func Detect(text string) Format {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return Header
 	}
-	var obj map[string]string
-	if err := json.Unmarshal([]byte(trimmed), &obj); err == nil && obj != nil {
+	if _, _, ok := parseJSON(trimmed); ok {
 		return JSONCookies
 	}
 	for _, line := range nonCommentLines(trimmed) {
@@ -64,10 +87,53 @@ func Detect(text string) Format {
 	return Header
 }
 
+// parseJSON 识别并解析三种 JSON 形态：顶层数组、{"cookies":[...]} 包裹与
+// 顶层 name → value 对象。数组形态返回 entries（空数组返回非 nil 空切片），
+// 对象映射形态返回 pairs；ok 为 false 表示输入不是合法 JSON。
+func parseJSON(text string) (map[string]string, []jsonEntry, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return nil, nil, false
+	}
+	if !json.Valid([]byte(trimmed)) {
+		return nil, nil, false
+	}
+
+	if trimmed[0] == '[' {
+		var entries []jsonEntry
+		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+			// 合法 JSON 数组但元素不是 cookie 对象：识别为 JSON，取不到键值。
+			entries = []jsonEntry{}
+		}
+		return nil, entries, true
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &top); err != nil {
+		return nil, nil, true
+	}
+	if raw, exists := top["cookies"]; exists {
+		var entries []jsonEntry
+		if err := json.Unmarshal(raw, &entries); err == nil {
+			return nil, entries, true
+		}
+	}
+
+	pairs := make(map[string]string)
+	for name, raw := range top {
+		var value string
+		if err := json.Unmarshal(raw, &value); err == nil {
+			pairs[name] = value
+		}
+	}
+	return pairs, nil, true
+}
+
 // ParseMap 把任意格式的 Cookie 文本解析成 name → value 映射，同时返回识别
 // 出的格式。同名键以首次出现为准（请求头语义），空名与畸形片段忽略。
 //
-// Netscape 行取第 6 列（name）与第 7 列（value）；Header 先按行归一成
+// Netscape 行取第 6 列（name）与第 7 列（value）；JSON 数组取每个元素的
+// name/value（同名首个生效，空值保留为空串）；Header 先按行归一成
 // `name=value; ...` 再按分号切分。空输入或纯注释输入返回空映射而非错误。
 func ParseMap(text string) (map[string]string, Format, error) {
 	format := Detect(text)
@@ -75,10 +141,18 @@ func ParseMap(text string) (map[string]string, Format, error) {
 
 	switch format {
 	case JSONCookies:
-		if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &pairs); err != nil {
-			return nil, format, fmt.Errorf("解析 JSON Cookie: %w", err)
+		jsonPairs, entries, ok := parseJSON(text)
+		if !ok {
+			return nil, format, errors.New("解析 JSON Cookie: 无法识别 JSON 结构")
 		}
-		return pairs, format, nil
+		if entries != nil {
+			pairs = make(map[string]string)
+			for _, entry := range entries {
+				addPair(pairs, entry.Name, entry.Value)
+			}
+			return pairs, format, nil
+		}
+		return jsonPairs, format, nil
 	case Netscape:
 		for _, line := range nonCommentLines(text) {
 			fields := strings.Split(line, "\t")
@@ -151,12 +225,13 @@ func ToNetscape(text, domain string) string {
 	return b.String()
 }
 
-// Import 从 r 读取完整 Cookie 文本，标准化后写入
+// Import 从 r 读取完整 Cookie 文本，按站点所需格式标准化后写入
 // <dataDir>/cookies/<site>.txt（权限 0600），返回文件路径。
 //
-// Netscape 输入原样保存；Header 输入剥离行首 `Cookie:` 标签后保存；JSON
-// 对象按键名排序转成 `name=value; ...` 头字符串。空输入返回错误。函数不
-// 打印、不记录任何 Cookie 值。
+// douyin/bilibili/youtube/instagram/twitter 写 Netscape（yt-dlp 可读），
+// xiaohongshu 写请求头并只保留 domain 含 xiaohongshu.com 的 JSON 条目，未知
+// 站点保留请求头。Netscape 输入写 Netscape 站点时原样保存。空输入返回
+// 错误。函数不打印、不记录任何 Cookie 值。
 func Import(dataDir, site string, r io.Reader) (string, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
@@ -167,22 +242,24 @@ func Import(dataDir, site string, r io.Reader) (string, error) {
 		return "", errors.New("输入为空：请确认已复制完整 Cookie")
 	}
 
-	switch Detect(text) {
-	case JSONCookies:
-		pairs, _, err := ParseMap(text)
-		if err != nil {
-			return "", err
-		}
-		text = headerFromMap(pairs)
+	format := Detect(text)
+	var content string
+	switch {
+	case site == "xiaohongshu":
+		content = xiaohongshuContent(text, format)
 	default:
-		text = stripCookieLabel(text)
+		if domain, ok := netscapeSites[site]; ok {
+			content = netscapeContent(text, format, domain)
+		} else {
+			content = headerContent(text, format)
+		}
 	}
 
 	path := filepath.Join(dataDir, "cookies", site+".txt")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("创建 Cookie 目录: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
 		return "", fmt.Errorf("写入 Cookie %s: %w", path, err)
 	}
 	// WriteFile 不会收紧已存在文件的权限，显式 chmod 保证旧文件也是 0600。
@@ -204,9 +281,10 @@ type Issue struct {
 
 // Check 按站点已知规则体检 Cookie 文本，返回缺口列表；无缺口返回 nil。
 //
-// 只检查键名存在性，不读取、不回显值。抖音要求 UIFID/UIFID_TEMP 与
-// ttwid/sessionid 两组门禁；小红书要求 a1 与 webId/web_session。其他站点
-// 没有已知必需键，一律通过。
+// 只检查键名与值是否非空，不打印、不回显值。空值视为缺失。抖音要求
+// UIFID/UIFID_TEMP 与 ttwid/sessionid 两组门禁至少其一非空；小红书要求
+// a1 非空且长度 >=30，webId/web_session 至少其一非空。其他站点没有已知
+// 必需键，一律通过。
 func Check(text, site string) []Issue {
 	pairs, _, err := ParseMap(text)
 	if err != nil {
@@ -216,14 +294,14 @@ func Check(text, site string) []Issue {
 	switch site {
 	case "douyin":
 		var issues []Issue
-		if !hasAny(pairs, "UIFID", "UIFID_TEMP") {
+		if !hasNonEmpty(pairs, "UIFID", "UIFID_TEMP") {
 			issues = append(issues, Issue{
 				Key:     "UIFID/UIFID_TEMP",
 				Message: "缺少 UIFID（或 UIFID_TEMP），抖音签名会被风控拦截，请重新完整导出 Cookie。",
 				Missing: true,
 			})
 		}
-		if !hasAny(pairs, "ttwid", "sessionid") {
+		if !hasNonEmpty(pairs, "ttwid", "sessionid") {
 			issues = append(issues, Issue{
 				Key:     "ttwid/sessionid",
 				Message: "缺少 ttwid 或 sessionid 登录态，接口会返回 200 空响应，请刷新 Cookie。",
@@ -233,14 +311,14 @@ func Check(text, site string) []Issue {
 		return issues
 	case "xiaohongshu":
 		var issues []Issue
-		if !hasAny(pairs, "a1") {
+		if len(strings.TrimSpace(pairs["a1"])) < xhsA1MinLen {
 			issues = append(issues, Issue{
 				Key:     "a1",
-				Message: "缺少 a1 核心身份键，会被 302 到登录页，请重新导入完整 Cookie。",
+				Message: "缺少 a1 或长度不足 30 位，会被 302 到登录页，请重新导入完整 Cookie。",
 				Missing: true,
 			})
 		}
-		if !hasAny(pairs, "webId", "web_session") {
+		if !hasNonEmpty(pairs, "webId", "web_session") {
 			issues = append(issues, Issue{
 				Key:     "webId/web_session",
 				Message: "缺少 webId 或 web_session，登录态可能不完整，请重新导入完整 Cookie。",
@@ -317,12 +395,74 @@ func headerFromMap(pairs map[string]string) string {
 	return strings.Join(parts, "; ")
 }
 
-// hasAny 报告映射中是否至少存在一个给定键名。
-func hasAny(pairs map[string]string, names ...string) bool {
+// hasNonEmpty 报告映射中是否至少有一个给定键名对应非空值。
+func hasNonEmpty(pairs map[string]string, names ...string) bool {
 	for _, name := range names {
-		if _, ok := pairs[name]; ok {
+		if strings.TrimSpace(pairs[name]) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// headerContent 把任意格式输入转成请求头字符串，供 Import 统一调用。
+func headerContent(text string, format Format) string {
+	if format != JSONCookies {
+		if format == Netscape {
+			return ToHeader(text)
+		}
+		return stripCookieLabel(text)
+	}
+	pairs, entries, ok := parseJSON(text)
+	if !ok {
+		return ""
+	}
+	if entries != nil {
+		return headerFromEntries(entries, "")
+	}
+	return headerFromMap(pairs)
+}
+
+// xiaohongshuContent 生成小红书 cookies 文件内容：请求头格式，JSON 数组按
+// 站点域过滤第三方 cookie（对象映射形态没有域信息，全部保留）。
+func xiaohongshuContent(text string, format Format) string {
+	if format != JSONCookies {
+		return headerContent(text, format)
+	}
+	pairs, entries, ok := parseJSON(text)
+	if !ok {
+		return ""
+	}
+	if entries != nil {
+		return headerFromEntries(entries, xhsCookieDomain)
+	}
+	return headerFromMap(pairs)
+}
+
+// netscapeContent 生成 Netscape 文件内容。输入已是 Netscape 时原样保留，
+// 其余格式先归一成请求头再转换，避免把 JSON/Header 直接塞进 yt-dlp 文件。
+func netscapeContent(text string, format Format, domain string) string {
+	if format == Netscape {
+		return text
+	}
+	return ToNetscape(headerContent(text, format), domain)
+}
+
+// headerFromEntries 按输入顺序把 JSON 条目拼成请求头；同名首个生效。
+// domainSuffix 非空时只保留 domain 含该子串的条目（大小写不敏感）。
+func headerFromEntries(entries []jsonEntry, domainSuffix string) string {
+	parts := make([]string, 0, len(entries))
+	seen := make(map[string]bool)
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		if domainSuffix != "" && !strings.Contains(strings.ToLower(entry.Domain), domainSuffix) {
+			continue
+		}
+		seen[name] = true
+		parts = append(parts, name+"="+strings.TrimSpace(entry.Value))
+	}
+	return strings.Join(parts, "; ")
 }
