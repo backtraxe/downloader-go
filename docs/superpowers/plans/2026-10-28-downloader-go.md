@@ -179,7 +179,7 @@ module github.com/backtraxe/downloader-go
 go 1.27
 ```
 
-`cmd/downloader/main.go` 定义 `var version, commit, date = "dev", "none", "unknown"`，`dependencies` 先只有 `dispatch func(context.Context, string, bool) result.Result`；`runWith` 用 `strings.TrimPrefix` 手动剥离全局 `--data-dir`，再按 `version` 分派；未知命令打印用法并返回 2。`version` 输出：
+`cmd/downloader/main.go` 定义 `var version, commit, date = "dev", "none", "unknown"`；Task 1 的 `dependencies` 先定义为空结构体 `type dependencies struct{}`（`result` 包要到 Task 2 才存在），`runWith` 用 `strings.TrimPrefix` 手动剥离全局 `--data-dir`，再按 `version` 分派；其他命令先打印“尚未接入”并返回 2。Task 11 再把 `dispatch func(context.Context, string, bool) result.Result` 加进 `dependencies`。`version` 输出：
 
 ```text
 downloader dev (commit none, built unknown)
@@ -1114,6 +1114,8 @@ Expected: FAIL。
 
 `Dispatch` 顺序：`sites.Detect` → xiaohongshu（读 Cookie，缺失 `failed`；用 `cookies.ToHeader` 转成请求头）→ douyin（短链展开后判 note/video，读 Cookie 并转请求头）→ `bilibili/youtube/instagram/twitter` 走 YTDLP → 其他 Generic。`ResolveShortLink` 只对 `urlutil.IsShortLink` 发 GET，取 `resp.URL.String()`；失败原样返回。`runWith` 读取行，`q` 退出，`extractURLs` 后逐条 dispatch；`-f` 传 force。
 
+Task 11 把 `dispatch` 字段加进 `dependencies`，并在 `main.go` 里只接 YTDLP/Generic；`Handlers.XHS`/`DouyinNote`/`DouyinVideo` 保持 nil，`Dispatch` 遇到 nil 返回 `failed`（“后端尚未接入”），等 Task 15/16 再接。
+
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `go test ./internal/dispatch ./cmd/downloader -v`
@@ -1547,9 +1549,11 @@ func TestCallUnwrapsResultAndErrors(t *testing.T) {
     msg, err := c.SendMessage(context.Background(), "42", "hi")
     if err != nil || msg.MessageID != 9 { t.Fatalf("%+v %v", msg, err) }
 
-    srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte(`{"ok":false,"description":"bad token"}`))
-    })
+    }))
+    defer errSrv.Close()
+    c.BaseURL = errSrv.URL
     if _, err := c.SendMessage(context.Background(), "42", "hi"); err == nil || !strings.Contains(err.Error(), "bad token") {
         t.Fatalf("err=%v", err)
     }

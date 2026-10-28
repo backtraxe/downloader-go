@@ -1,0 +1,16 @@
+downloader-go
+Copyright (c) 2026 Backtraxe
+
+本仓库以 MIT 许可证发布（见 LICENSE）。
+
+第三方代码说明：
+
+后续版本的 internal/douyinsign/ 将移植自
+Evil0ctal/Douyin_TikTok_Download_API
+(https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
+该项目以 Apache License 2.0 授权。移植文件将保留原始版权声明，并继续适用
+Apache License 2.0；相关文件的修改说明会在文件头注明。
+
+This product includes software developed by Evil0ctal
+(https://github.com/Evil0ctal/Douyin_TikTok_Download_API), licensed under the
+Apache License, Version 2.0.
