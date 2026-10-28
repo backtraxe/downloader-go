@@ -60,6 +60,28 @@ func TestNormalizeUndefined(t *testing.T) {
 	}
 }
 
+func TestNormalizeJSLiterals(t *testing.T) {
+	in := `{"when":new Date(1793201339151),"nan":NaN,"inf":Infinity,"ninf":-Infinity}`
+	out := NormalizeUndefined(in)
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("normalized JSON invalid: %v (%s)", err, out)
+	}
+}
+
+func TestParseInitialStateTrailingScript(t *testing.T) {
+	html := `<script>window.__INITIAL_STATE__ = {"note":{"noteDetailMap":{"3":{"note":{` +
+		`"noteId":"3","title":"t","user":{"nickname":"u"},"imageList":[]}}}}};` +
+		`window.__OTHER__ = {"ignored":true}</script>`
+	note, err := ParseInitialState(html)
+	if err != nil {
+		t.Fatalf("ParseInitialState: %v", err)
+	}
+	if note.ID != "3" {
+		t.Fatalf("note=%+v", note)
+	}
+}
+
 func TestParseInitialState(t *testing.T) {
 	html := `<html><script>window.__INITIAL_STATE__ = ` +
 		`{"note":{"noteDetailMap":{"1":{"note":{` +

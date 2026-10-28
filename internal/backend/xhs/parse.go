@@ -61,13 +61,21 @@ type Note struct {
 	liveByIndex []string
 }
 
-// initialStatePattern 与 Python 正则等价：贪婪匹配到最后一个 } 后接
-// </script>，避免被状态内部的 }</script> 截断。
+// initialStatePattern 是兜底提取器（贪婪匹配到 </script> 前最后一个 }）。
+// 正常路径用 extractInitialState 做括号配平，避免状态对象后面还有别的
+// JS 语句时把整段脚本一起吃进来。
 var initialStatePattern = regexp.MustCompile(`(?s)window\.__INITIAL_STATE__\s*=\s*(\{.*\})\s*</script>`)
 
 // undefinedPattern 只替换 JSON 值语境的 undefined：前一个字符是 :、[、,
 // 或空白，且后接词边界。紧跟在引号/其他字符后的字符串内容不受影响。
 var undefinedPattern = regexp.MustCompile(`([\[:,\s])\s*undefined\b`)
+
+// 小红书内嵌状态偶尔会带非 JSON 的 JS 字面量（new Date(...)、NaN、
+// Infinity）。这些字段与笔记详情无关，替换成 null 即可让整段状态可解析。
+var (
+	nonFinitePattern = regexp.MustCompile(`-?Infinity\b|\bNaN\b`)
+	newDatePattern   = regexp.MustCompile(`\bnew\s+Date\s*\([^)]*\)`)
+)
 
 // notePathPattern 匹配带作品 ID 的笔记页路径。
 var notePathPattern = regexp.MustCompile(`(?i)/(?:explore|discovery/item|notes)/[^/]+`)
@@ -89,7 +97,62 @@ func HasXsecToken(rawURL string) bool {
 // 与 core/utils.py:normalize_xhs_state_json 的匹配口径一致，但不额外插入
 // 空格，保证归一化结果是最小改动（仍是合法 JSON）。
 func NormalizeUndefined(raw string) string {
-	return undefinedPattern.ReplaceAllString(raw, "${1}null")
+	out := undefinedPattern.ReplaceAllString(raw, "${1}null")
+	out = nonFinitePattern.ReplaceAllString(out, "null")
+	out = newDatePattern.ReplaceAllString(out, "null")
+	return out
+}
+
+// extractInitialState 从 marker 后的第一个 { 开始做括号配平，返回完整的
+// 状态对象。字符串内的括号/转义不会影响计数。页面结构异常时返回 false，
+// 由调用方回退到正则提取。
+func extractInitialState(html string) (string, bool) {
+	idx := strings.Index(html, "window.__INITIAL_STATE__")
+	if idx < 0 {
+		return "", false
+	}
+	rest := html[idx:]
+	eq := strings.IndexByte(rest, '=')
+	if eq < 0 {
+		return "", false
+	}
+	start := strings.IndexByte(rest[eq+1:], '{')
+	if start < 0 {
+		return "", false
+	}
+	start += eq + 1
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(rest); i++ {
+		c := rest[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // ParseInitialState 从页面 HTML 中提取第一条笔记。
@@ -97,11 +160,15 @@ func NormalizeUndefined(raw string) string {
 // 找不到 window.__INITIAL_STATE__ 返回 ErrNoInitialState；noteDetailMap
 // 缺失或为空返回 ErrNoNoteData；JSON 损坏时返回带原因的错误。
 func ParseInitialState(html string) (*Note, error) {
-	match := initialStatePattern.FindStringSubmatch(html)
-	if match == nil {
-		return nil, ErrNoInitialState
+	raw, ok := extractInitialState(html)
+	if !ok {
+		match := initialStatePattern.FindStringSubmatch(html)
+		if match == nil {
+			return nil, ErrNoInitialState
+		}
+		raw = match[1]
 	}
-	stateJSON := NormalizeUndefined(match[1])
+	stateJSON := NormalizeUndefined(raw)
 
 	var top struct {
 		Note struct {
@@ -232,7 +299,9 @@ func IsHomepageLanding(finalURL, body string) bool {
 // body 既可以是完整 HTML，也可以是测试里直接给的 JSON。
 func noteDetailMapEmpty(body string) bool {
 	raw := ""
-	if match := initialStatePattern.FindStringSubmatch(body); match != nil {
+	if state, ok := extractInitialState(body); ok {
+		raw = state
+	} else if match := initialStatePattern.FindStringSubmatch(body); match != nil {
 		raw = match[1]
 	} else {
 		trimmed := strings.TrimSpace(body)
