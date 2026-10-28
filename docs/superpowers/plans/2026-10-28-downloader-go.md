@@ -1595,7 +1595,16 @@ func TestDownloadWritesNumberedImages(t *testing.T) {
 }
 
 func TestExpiredShortLinkMessage(t *testing.T) {
-    // 页面 200、最终 URL 为首页、noteDetailMap 为空；断言 failed 且 Message 含 "失效"。
+    // xhslink.com 短链 302 到首页；页面 200、noteDetailMap 为空；
+    // 断言 failed 且 Message 含 "失效"（不能报 "xsec_token"）。
+}
+
+func TestShortLinkResolvesToNote(t *testing.T) {
+    // xhslink.com 短链 302 到带 xsec_token 的笔记页；断言下载成功。
+}
+
+func TestDirectBareExploreNeedsToken(t *testing.T) {
+    // 直链 xiaohongshu.com/explore/<id> 无 xsec_token；断言 failed 且 Message 含 "xsec_token"。
 }
 ```
 
@@ -1606,8 +1615,8 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-- 先 `HasXsecToken`，缺失直接 `failed` 并提示“链接必须带 xsec_token”。
-- GET 页面（带 Cookie、Referer、UA），`IsHomepageLanding` 命中则提示“分享链接已失效”。
+- token 门禁只对**直链**（`xiaohongshu.com`/`rednote.com`）生效：`HasXsecToken` 缺失时直接 `failed` 并提示“链接必须带 xsec_token”。`xhslink.com`/`xhslink.cn` 短链不在本地预检，必须先 GET 跟随 302（短链的 token 在跳转目标里）。
+- GET 页面（带 Cookie、Referer、UA）；短链落到首页且 `noteDetailMap` 为空时提示“分享链接已失效”；短链跳到笔记页但最终 URL 仍无 `xsec_token` 时提示 token。
 - 提取 `window.__INITIAL_STATE__`，`NormalizeUndefined` 后 `encoding/json` 解析；`noteDetailMap` 取第一个 note。
 - 图片/实况/视频选最高档；`001.ext` 编号；视频 `video.mp4`；输出目录 `download/xiaohongshu[/<author>]/<title>_<noteId>`。
 - 并发 5，瞬时错误重试 3 次。
