@@ -14,6 +14,11 @@ func TestConfigureDefaultsToPlusEight(t *testing.T) {
 	if offset != 8*60*60 {
 		t.Fatalf("offset=%d", offset)
 	}
+	if _, err := time.LoadLocation(defaultZone); err == nil {
+		if got := time.Local.String(); got != defaultZone {
+			t.Fatalf("location=%q, want %q", got, defaultZone)
+		}
+	}
 }
 
 func TestConfigureOverrideUTC(t *testing.T) {

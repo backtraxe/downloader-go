@@ -5,7 +5,8 @@
 // Linux paths. A CGO-free Go binary therefore gets an empty root pool and
 // fails every HTTPS request with "certificate signed by unknown authority".
 // Pointing SSL_CERT_FILE/SSL_CERT_DIR at the Termux locations fixes both the
-// standard-library TLS stack and utls.
+// standard-library TLS stack and utls. ZONEINFO is pointed at Termux's tzdata
+// so time.LoadLocation("Asia/Shanghai") works.
 package termuxenv
 
 import (
@@ -28,6 +29,12 @@ func Configure(getenv func(string) string, setenv func(string, string) error, st
 	certDir := filepath.Join(prefix, "etc", "tls", "certs")
 	if info, err := stat(certDir); err == nil && info.IsDir() {
 		_ = setenv("SSL_CERT_DIR", certDir)
+	}
+	// Go's time.LoadLocation does not search Termux's prefix; point ZONEINFO
+	// at the tzdata directory so Asia/Shanghai resolves.
+	zoneInfo := filepath.Join(prefix, "share", "zoneinfo")
+	if info, err := stat(zoneInfo); err == nil && info.IsDir() {
+		_ = setenv("ZONEINFO", zoneInfo)
 	}
 }
 

@@ -51,11 +51,11 @@ type dependencies struct {
 }
 
 func main() {
-	// 日志默认使用 +08:00；DOWNLOADER_TZ 可覆盖为 IANA 时区或 Local。
-	timezone.ConfigureDefault()
-	// Termux 的 CA bundle 不在标准路径，先指到 $PREFIX/etc/tls，否则所有
-	// HTTPS 请求都会报 unknown authority。
+	// Termux 的 CA bundle 与 tzdata 都不在 Go 默认路径；先指向 $PREFIX 下的
+	// 位置，再设置时区与 DNS。
 	termuxenv.ConfigureDefault()
+	// 日志默认使用 Asia/Shanghai；DOWNLOADER_TZ 可覆盖为 IANA 时区或 Local。
+	timezone.ConfigureDefault()
 	// Termux 没有 /etc/resolv.conf，纯 Go 解析器会退回 [::1]:53；在 Termux
 	// 上换成直连公共 DNS 的解析器。其他平台是 no-op。
 	netdns.InstallDefault()

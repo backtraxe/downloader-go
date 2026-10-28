@@ -26,6 +26,8 @@ func TestConfigureTermuxSetsCertPaths(t *testing.T) {
 			return fakeInfo{}, nil
 		case "/data/data/com.termux/files/usr/etc/tls/certs":
 			return fakeInfo{dir: true}, nil
+		case "/data/data/com.termux/files/usr/share/zoneinfo":
+			return fakeInfo{dir: true}, nil
 		}
 		return nil, errors.New("missing")
 	}
@@ -39,6 +41,9 @@ func TestConfigureTermuxSetsCertPaths(t *testing.T) {
 	}
 	if vars["SSL_CERT_DIR"] != "/data/data/com.termux/files/usr/etc/tls/certs" {
 		t.Fatalf("SSL_CERT_DIR=%q", vars["SSL_CERT_DIR"])
+	}
+	if vars["ZONEINFO"] != "/data/data/com.termux/files/usr/share/zoneinfo" {
+		t.Fatalf("ZONEINFO=%q", vars["ZONEINFO"])
 	}
 }
 

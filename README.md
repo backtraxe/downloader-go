@@ -55,7 +55,7 @@ Termux 的 CA 证书在 `$PREFIX/etc/tls/`，不在 Go 默认查找的路径里�
 `x509: certificate signed by unknown authority`；如需覆盖，可在启动前
 自行 export 这两个变量。
 
-日志时间默认使用 `+08:00`。需要改时区时：
+日志时间默认使用 `Asia/Shanghai`（`+08:00`）。需要改时区时：
 
 ```bash
 DOWNLOADER_TZ=UTC dl-go bot

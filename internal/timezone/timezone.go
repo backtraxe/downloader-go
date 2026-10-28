@@ -11,14 +11,16 @@ import (
 	"time"
 )
 
-const defaultOffset = 8 * 60 * 60
+const (
+	defaultZone   = "Asia/Shanghai"
+	defaultOffset = 8 * 60 * 60
+)
 
 // Configure sets time.Local. It is called once at startup.
 func Configure(getenv func(string) string) {
 	name := getenv("DOWNLOADER_TZ")
 	if name == "" {
-		time.Local = time.FixedZone("CST", defaultOffset)
-		return
+		name = defaultZone
 	}
 	if name == "Local" || name == "local" {
 		return
@@ -27,6 +29,7 @@ func Configure(getenv func(string) string) {
 		time.Local = loc
 		return
 	}
+	// tzdata missing: still keep the requested +08:00 offset.
 	time.Local = time.FixedZone("CST", defaultOffset)
 }
 
