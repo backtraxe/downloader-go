@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/backtraxe/downloader-go/internal/backend/douyin"
 	"github.com/backtraxe/downloader-go/internal/backend/generic"
 	"github.com/backtraxe/downloader-go/internal/backend/ytdlp"
 	"github.com/backtraxe/downloader-go/internal/dispatch"
@@ -45,12 +46,16 @@ func defaultDependencies(dataDir string) dependencies {
 		Profile:  httpclient.Chrome120,
 		Timeouts: httpclient.DefaultTimeouts(),
 	})
+	// 抖音后端的签名 UA 与 secure 客户端的 Chrome133 指纹保持一致。
+	douyinDownloader := &douyin.Downloader{HTTP: secure, DataDir: dataDir}
 	d := &dispatch.Dispatcher{
 		HTTP:    secure,
 		DataDir: dataDir,
 		Handlers: dispatch.Handlers{
-			YTDLP:   ytdlp.New(dataDir).Download,
-			Generic: (&generic.Downloader{HTTP: genericClient, DataDir: dataDir}).Download,
+			DouyinNote:  douyinDownloader.DownloadNote,
+			DouyinVideo: douyinDownloader.DownloadVideo,
+			YTDLP:       ytdlp.New(dataDir).Download,
+			Generic:     (&generic.Downloader{HTTP: genericClient, DataDir: dataDir}).Download,
 		},
 	}
 	return dependencies{dispatch: d.Dispatch}
