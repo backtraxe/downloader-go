@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 
@@ -79,5 +80,88 @@ func TestResolveDataDir(t *testing.T) {
 	t.Setenv("DOWNLOADER_HOME", "")
 	if got := resolveDataDir(""); got != "." {
 		t.Fatalf("cwd fallback: %q", got)
+	}
+}
+
+func TestParseUploadArgs(t *testing.T) {
+	tests := []struct {
+		args    []string
+		path    string
+		caption string
+		wantErr bool
+	}{
+		{args: []string{"a.jpg"}, path: "a.jpg"},
+		{args: []string{"a.jpg", "--caption", "标题"}, path: "a.jpg", caption: "标题"},
+		{args: []string{"--caption=标题", "a.jpg"}, path: "a.jpg", caption: "标题"},
+		{args: nil, wantErr: true},
+		{args: []string{"a", "b"}, wantErr: true},
+		{args: []string{"a", "--caption"}, wantErr: true},
+		{args: []string{"--nope", "a"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		path, caption, err := parseUploadArgs(tt.args)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("args=%v: expected error", tt.args)
+			}
+			continue
+		}
+		if err != nil || path != tt.path || caption != tt.caption {
+			t.Fatalf("args=%v: path=%q caption=%q err=%v", tt.args, path, caption, err)
+		}
+	}
+}
+
+func TestRunUploadMissingConfig(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := runUpload(context.Background(), t.TempDir(), []string{"some-file"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "请先在") {
+		t.Fatalf("stderr=%q", errOut.String())
+	}
+}
+
+func TestRunUploadUsageError(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := runUpload(context.Background(), t.TempDir(), nil, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "用法") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunBotMissingConfig(t *testing.T) {
+	var errOut bytes.Buffer
+	code := runBot(context.Background(), t.TempDir(), func(context.Context, string, bool) result.Result {
+		return result.Result{}
+	}, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "请先在") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunWithRoutesBotAndUpload(t *testing.T) {
+	var out bytes.Buffer
+	var botCalled bool
+	var uploadArgs []string
+	deps := dependencies{
+		bot: func(context.Context, io.Writer, io.Writer) int {
+			botCalled = true
+			return 0
+		},
+		upload: func(_ context.Context, args []string, _, _ io.Writer) int {
+			uploadArgs = args
+			return 0
+		},
+	}
+	if code := runWith([]string{"bot"}, strings.NewReader(""), &out, &out, deps); code != 0 || !botCalled {
+		t.Fatalf("bot code=%d called=%v", code, botCalled)
+	}
+	if code := runWith([]string{"upload", "a.jpg", "--caption", "标题"}, strings.NewReader(""), &out, &out, deps); code != 0 {
+		t.Fatalf("upload code=%d", code)
+	}
+	if strings.Join(uploadArgs, " ") != "a.jpg --caption 标题" {
+		t.Fatalf("uploadArgs=%v", uploadArgs)
 	}
 }

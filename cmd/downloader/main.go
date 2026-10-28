@@ -3,18 +3,23 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/backend/douyin"
 	"github.com/backtraxe/downloader-go/internal/backend/generic"
 	"github.com/backtraxe/downloader-go/internal/backend/xhs"
 	"github.com/backtraxe/downloader-go/internal/backend/ytdlp"
+	"github.com/backtraxe/downloader-go/internal/config"
 	"github.com/backtraxe/downloader-go/internal/dispatch"
 	"github.com/backtraxe/downloader-go/internal/httpclient"
 	"github.com/backtraxe/downloader-go/internal/result"
+	"github.com/backtraxe/downloader-go/internal/telegram"
+	"github.com/backtraxe/downloader-go/internal/tgapi"
 	"github.com/backtraxe/downloader-go/internal/urlutil"
 )
 
@@ -24,6 +29,8 @@ var version, commit, date = "dev", "none", "unknown"
 // dependencies 汇总命令依赖，测试可注入替身。
 type dependencies struct {
 	dispatch func(context.Context, string, bool) result.Result
+	bot      func(ctx context.Context, stdout, stderr io.Writer) int
+	upload   func(ctx context.Context, args []string, stdout, stderr io.Writer) int
 }
 
 func main() {
@@ -62,7 +69,15 @@ func defaultDependencies(dataDir string) dependencies {
 			Generic:     (&generic.Downloader{HTTP: genericClient, DataDir: dataDir}).Download,
 		},
 	}
-	return dependencies{dispatch: d.Dispatch}
+	return dependencies{
+		dispatch: d.Dispatch,
+		bot: func(ctx context.Context, stdout, stderr io.Writer) int {
+			return runBot(ctx, dataDir, d.Dispatch, stderr)
+		},
+		upload: func(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+			return runUpload(ctx, dataDir, args, stdout, stderr)
+		},
+	}
 }
 
 // runWith 解析全局 --data-dir 后按子命令分派。无子命令时进入交互式下载，
@@ -82,6 +97,18 @@ func runWith(args []string, stdin io.Reader, stdout, stderr io.Writer, deps depe
 		return 0
 	case "run":
 		return runInteractive(args[1:], stdin, stdout, stderr, deps)
+	case "bot":
+		if deps.bot == nil {
+			fmt.Fprintln(stderr, "机器人依赖未配置")
+			return 1
+		}
+		return deps.bot(context.Background(), stdout, stderr)
+	case "upload":
+		if deps.upload == nil {
+			fmt.Fprintln(stderr, "上传依赖未配置")
+			return 1
+		}
+		return deps.upload(context.Background(), args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "命令 %q 尚未接入\n", args[0])
 		return 2
@@ -129,6 +156,120 @@ func runInteractive(flags []string, stdin io.Reader, stdout, stderr io.Writer, d
 		return 1
 	}
 	return 0
+}
+
+// loadTelegramConfig 从数据目录读取 telegram 段配置，返回配置与文件路径。
+func loadTelegramConfig(dataDir string) (*config.Telegram, string, error) {
+	path := filepath.Join(dataDir, "config.json")
+	cfg, err := config.Load(config.LoadOptions{
+		Path:       path,
+		LegacyPath: filepath.Join(dataDir, "telegram.json"),
+	})
+	if err != nil {
+		return nil, path, err
+	}
+	return &cfg.Telegram, path, nil
+}
+
+// printConfigGuidance 提示用户填写配置；不输出 token 等敏感值。
+func printConfigGuidance(w io.Writer, path string, err error) {
+	fmt.Fprintf(w, "请先在 %s 的 telegram 段填入 bot_token / chat_id / allowed_users（@BotFather 拿 token；用户 id 会在首次私聊被拒时回显）。\n", path)
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		fmt.Fprintf(w, "读取配置失败：%v\n", err)
+	}
+}
+
+// runBot 加载配置并启动长轮询机器人。
+func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context, string, bool) result.Result, stderr io.Writer) int {
+	cfg, path, err := loadTelegramConfig(dataDir)
+	if err != nil {
+		printConfigGuidance(stderr, path, err)
+		return 1
+	}
+	if cfg.BotToken == "" {
+		printConfigGuidance(stderr, path, errors.New("telegram.bot_token 为空"))
+		return 1
+	}
+	if dispatchFn == nil {
+		fmt.Fprintln(stderr, "下载分发未配置")
+		return 1
+	}
+
+	api := tgapi.New(cfg.BotToken)
+	bot := &telegram.Bot{
+		API:      api,
+		Config:   *cfg,
+		DataDir:  dataDir,
+		Dispatch: dispatchFn,
+		Uploader: &telegram.Uploader{API: api},
+	}
+	if err := bot.Run(ctx); err != nil {
+		fmt.Fprintf(stderr, "机器人运行失败：%v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runUpload 把本地目录或文件上传到配置中的 chat_id。
+func runUpload(ctx context.Context, dataDir string, args []string, stdout, stderr io.Writer) int {
+	path, caption, err := parseUploadArgs(args)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	cfg, cfgPath, err := loadTelegramConfig(dataDir)
+	if err != nil {
+		printConfigGuidance(stderr, cfgPath, err)
+		return 1
+	}
+	if cfg.BotToken == "" || cfg.ChatID.String() == "" {
+		printConfigGuidance(stderr, cfgPath, errors.New("telegram 段缺少 bot_token 或 chat_id"))
+		return 1
+	}
+
+	u := &telegram.Uploader{API: tgapi.New(cfg.BotToken)}
+	sent, skipped, err := telegram.UploadPath(ctx, u, cfg.ChatID.String(), path, caption)
+	if err != nil {
+		fmt.Fprintf(stderr, "上传失败：%v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "完成：%d 项已回传", sent)
+	if len(skipped) > 0 {
+		fmt.Fprintf(stdout, "，%d 项超限跳过", len(skipped))
+	}
+	fmt.Fprintln(stdout)
+	for _, file := range skipped {
+		fmt.Fprintf(stdout, "超 50MB 已跳过（文件在 %s）\n", file)
+	}
+	return 0
+}
+
+// parseUploadArgs 解析 upload 子命令参数：<path> [--caption TEXT]。
+func parseUploadArgs(args []string) (path, caption string, err error) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--caption":
+			if i+1 >= len(args) {
+				return "", "", errors.New("--caption 缺少参数")
+			}
+			caption = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--caption="):
+			caption = strings.TrimPrefix(args[i], "--caption=")
+		case strings.HasPrefix(args[i], "-"):
+			return "", "", fmt.Errorf("未知参数 %q", args[i])
+		default:
+			if path != "" {
+				return "", "", errors.New("只支持一个路径")
+			}
+			path = args[i]
+		}
+	}
+	if path == "" {
+		return "", "", errors.New("用法：downloader upload <path> [--caption TEXT]")
+	}
+	return path, caption, nil
 }
 
 // splitDataDir 剥离全局 --data-dir（支持 --data-dir=DIR 与 --data-dir DIR），
