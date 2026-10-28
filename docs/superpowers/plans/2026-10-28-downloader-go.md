@@ -534,6 +534,8 @@ func TestSanitizeFilename(t *testing.T) {
     got := SanitizeFilename("a/b\\c:d*e?f\"g<h>i|j\x00中文", "untitled", 80)
     if got != "abcdefghij中文" { t.Fatalf("%q", got) }
     if SanitizeFilename("   ", "untitled", 80) != "untitled" { t.Fatal("blank") }
+    if SanitizeFilename("..", "untitled", 80) != "untitled" { t.Fatal("dot-dot") }
+    if SanitizeFilename(".", "untitled", 80) != "untitled" { t.Fatal("dot") }
 }
 
 func TestBuildDownloadDir(t *testing.T) {
@@ -555,6 +557,9 @@ func TestUniquePathAndExistingByStem(t *testing.T) {
     if _, ok := ExistingByStem(filepath.Join(dir, "001.png")); !ok { t.Fatal("stem match") }
     os.WriteFile(filepath.Join(dir, "002.part"), nil, 0o600)
     if _, ok := ExistingByStem(filepath.Join(dir, "002.jpg")); ok { t.Fatal(".part counted") }
+    os.WriteFile(filepath.Join(dir, "[合集].jpg"), []byte("x"), 0o600)
+    if _, ok := ExistingByStem(filepath.Join(dir, "[合集].png")); !ok { t.Fatal("bracket stem") }
+    if _, ok := ExistingByStem(filepath.Join(dir, "[unmatched.png")); ok { t.Fatal("bad pattern should not match") }
 }
 ```
 
@@ -597,7 +602,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-先 `go get golang.org/x/image`。`ExistingByStem` 用 `filepath.Glob(stem+".*")`，忽略 `.part`/`.ytdl`。`DecodeDimensions` 注册 `image/jpeg`、`image/png`、`image/gif` 与 `golang.org/x/image/webp`，用 `image.DecodeConfig`。`IsDecorativeName` 用词边界正则，避免 `iconic` 命中 `icon`。
+先 `go get golang.org/x/image`。`ExistingByStem` 用 `os.ReadDir(filepath.Dir(stem))` + `strings.TrimSuffix(name, filepath.Ext(name))` 与 `filepath.Base(stem)` 比较，忽略 `.part`/`.ytdl`/目录；不要用 `filepath.Glob`（`[`/`]` 会被当成字符类）。`SanitizeFilename` 清理后若结果为 `.` 或 `..`，返回 `defaultName`。`DecodeDimensions` 注册 `image/jpeg`、`image/png`、`image/gif` 与 `golang.org/x/image/webp`，用 `image.DecodeConfig`。`IsDecorativeName` 用词边界正则，避免 `iconic` 命中 `icon`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
