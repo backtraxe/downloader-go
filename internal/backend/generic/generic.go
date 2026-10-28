@@ -90,17 +90,31 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 	if id := fsutil.ExtractURLNumericID(rawURL); id != "" {
 		dirTitle = title + "_" + id
 	}
-	dir := fsutil.BuildDownloadDir(d.DataDir, site, dirTitle, author)
+	// 全站统一布局：<dataDir>/download/<site>[/<author>]/<title>。
+	root := filepath.Join(d.DataDir, "download")
+	dir := fsutil.BuildDownloadDir(root, site, dirTitle, author)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return result.Result{Status: result.Failed, Message: "创建目录失败: " + err.Error()}
 	}
 
+	// 装饰资源在编号前剔除：序号必须连续，不能先按 DOM 顺序编号再过滤。
 	candidates := ExtractCandidates(doc, rawURL)
+	kept := make([]Candidate, 0, len(candidates))
+	filtered := 0
+	for _, candidate := range candidates {
+		if media.IsDecorativeName(candidateName(candidate.URL)) {
+			filtered++
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	candidates = kept
 	if len(candidates) == 0 {
-		return result.FromCounts(result.Counts{})
+		return result.FromCounts(result.Counts{Filtered: filtered})
 	}
 
 	counts, files := d.downloadAll(ctx, candidates, rawURL, dir, force)
+	counts.Filtered += filtered
 	res := result.FromCounts(counts)
 	res.Posts = []result.Post{{
 		Site:   site,
@@ -141,9 +155,10 @@ func (d *Downloader) downloadAll(
 		hostSems sync.Map
 	)
 
+	// 不覆盖 User-Agent：httpclient.Client 会补上与 TLS 指纹同版本的
+	// profile UA，后端口径覆盖会造成 UA/指纹错配。
 	header := http.Header{}
 	header.Set("Referer", pageURL)
-	header.Set("User-Agent", httpclient.Chrome120.UserAgent)
 
 	for index, candidate := range candidates {
 		wg.Add(1)
@@ -192,7 +207,7 @@ func (d *Downloader) downloadAll(
 	return counts, paths
 }
 
-// downloadOne 处理单个候选：名称过滤、幂等判断、下载与落盘后装饰图判定。
+// downloadOne 处理单个候选：幂等判断、下载与落盘后装饰图判定。
 func (d *Downloader) downloadOne(
 	ctx context.Context,
 	candidate Candidate,
@@ -201,12 +216,6 @@ func (d *Downloader) downloadOne(
 	force bool,
 	header http.Header,
 ) (outcome, string) {
-	// 名称过滤必须基于远端原始文件名：落盘后已改成 001.jpg，查不到
-	// logo/avatar 等关键词。
-	if media.IsDecorativeName(candidateName(candidate.URL)) {
-		return outcomeFiltered, ""
-	}
-
 	target := filepath.Join(dir, fmt.Sprintf("%03d.jpg", number))
 	marker := filepath.Join(dir, fmt.Sprintf(".%03d.skip", number))
 
@@ -215,9 +224,13 @@ func (d *Downloader) downloadOne(
 		if _, exists := fsutil.ExistingByStem(target); exists {
 			return outcomeSkipped, ""
 		}
-		// 上一次判定为装饰图的标记：没有产物可查，靠隐藏文件避免重复请求。
-		if _, err := os.Stat(marker); err == nil {
-			return outcomeSkipped, ""
+		// 上一次判定为装饰图的标记：只有标记里的 URL 与当前候选一致才
+		// 跳过；序号被新图复用时旧结论失效，删除标记后重新下载。
+		if data, err := os.ReadFile(marker); err == nil {
+			if strings.TrimSpace(string(data)) == candidate.URL {
+				return outcomeSkipped, ""
+			}
+			_ = os.Remove(marker)
 		}
 	}
 

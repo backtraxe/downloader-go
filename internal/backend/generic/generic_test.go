@@ -20,6 +20,7 @@ import (
 
 	"github.com/backtraxe/downloader-go/internal/httpclient"
 	"github.com/backtraxe/downloader-go/internal/result"
+	"github.com/backtraxe/downloader-go/internal/sites"
 )
 
 func TestExtractCandidates(t *testing.T) {
@@ -62,6 +63,8 @@ func TestExtractTitle(t *testing.T) {
 	}{
 		{`<html><head><title>  标题 - 站点  </title></head></html>`, "标题"},
 		{`<html><head><title>a - b - c</title></head></html>`, "a - b"},
+		{`<html><head><title>山间清晨 正文 来自 摄影师甲 - 站点</title></head></html>`, "山间清晨"},
+		{`<html><head><title>正文 来自 作者甲 - 示例站</title></head></html>`, "untitled"},
 		{`<html><head><title>只有标题</title></head></html>`, "只有标题"},
 		{`<html><head><title>   </title></head></html>`, "untitled"},
 		{`<html><head></head></html>`, "untitled"},
@@ -138,7 +141,7 @@ func TestExtractCandidatesFromTestdata(t *testing.T) {
 			t.Fatalf("candidate %d: got %q want %q", i, got[i].URL, url)
 		}
 	}
-	if title := ExtractTitle(doc); title != "山间清晨 正文 来自 摄影师甲" {
+	if title := ExtractTitle(doc); title != "山间清晨" {
 		t.Fatalf("title=%q", title)
 	}
 	rawTitle := doc.Find("title").First().Text()
@@ -178,7 +181,11 @@ func TestDownloadFiltersDecorativeAndWritesNumbered(t *testing.T) {
 	defer srv.Close()
 
 	pageURL := srv.URL + "/post/74208176"
-	d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: t.TempDir()}
+	dataDir := t.TempDir()
+	d := &Downloader{
+		HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome133}),
+		DataDir: dataDir,
+	}
 	res := d.Download(context.Background(), pageURL, false)
 
 	if res.Status != result.Downloaded {
@@ -194,8 +201,13 @@ func TestDownloadFiltersDecorativeAndWritesNumbered(t *testing.T) {
 	if len(post.Files) != 1 || filepath.Base(post.Files[0]) != "001.png" {
 		t.Fatalf("files=%v", post.Files)
 	}
-	if dir := filepath.Base(filepath.Dir(post.Files[0])); dir != "测试标题_74208176" {
-		t.Fatalf("dir=%q", dir)
+	rel, err := filepath.Rel(dataDir, post.Files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRel := filepath.Join("download", sites.Detect(pageURL), "测试标题_74208176", "001.png")
+	if rel != wantRel {
+		t.Fatalf("relative path=%q want %q", rel, wantRel)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(post.Files[0]), ".002.skip")); err == nil {
 		t.Fatal("decorative name should not write a skip marker")
@@ -211,8 +223,175 @@ func TestDownloadFiltersDecorativeAndWritesNumbered(t *testing.T) {
 	if len(gotReferers) != 1 || gotReferers[0] != pageURL {
 		t.Fatalf("referers=%v want %q", gotReferers, pageURL)
 	}
-	if len(gotAgents) != 1 || gotAgents[0] == "" {
-		t.Fatalf("agents=%v", gotAgents)
+	// 不覆盖 UA：客户端会补上与其 TLS profile 对齐的 UA。
+	if len(gotAgents) != 1 || gotAgents[0] != httpclient.Chrome133.UserAgent {
+		t.Fatalf("agents=%v want %q", gotAgents, httpclient.Chrome133.UserAgent)
+	}
+}
+
+func TestSkipMarkerOnlySkipsSameURL(t *testing.T) {
+	img := pngBytes(t, 400, 400)
+	var requests atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/post/55555", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>标记 - 站</title></head><body>
+          <img src="/new.png"></body></html>`)
+	})
+	mux.HandleFunc("/new.png", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(img)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pageURL := srv.URL + "/post/55555"
+	dirFor := func(dataDir string) string {
+		return filepath.Join(dataDir, "download", sites.Detect(pageURL), "标记_55555")
+	}
+
+	t.Run("mismatched marker redownloads", func(t *testing.T) {
+		dataDir := t.TempDir()
+		dir := dirFor(dataDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(dir, ".001.skip")
+		if err := os.WriteFile(marker, []byte("https://old.example/old.png\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		before := requests.Load()
+		d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: dataDir}
+		res := d.Download(context.Background(), pageURL, false)
+		if res.Status != result.Downloaded || len(res.Posts[0].Files) != 1 {
+			t.Fatalf("%+v", res)
+		}
+		if got := filepath.Base(res.Posts[0].Files[0]); got != "001.png" {
+			t.Fatalf("file=%q", got)
+		}
+		if got := requests.Load(); got != before+1 {
+			t.Fatalf("requests=%d want %d", got, before+1)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("stale marker should be removed: %v", err)
+		}
+	})
+
+	t.Run("matching marker skips", func(t *testing.T) {
+		dataDir := t.TempDir()
+		dir := dirFor(dataDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(dir, ".001.skip")
+		candidateURL := srv.URL + "/new.png"
+		if err := os.WriteFile(marker, []byte("  "+candidateURL+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		before := requests.Load()
+		d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: dataDir}
+		res := d.Download(context.Background(), pageURL, false)
+		if res.Status != result.Skipped || len(res.Posts[0].Files) != 0 {
+			t.Fatalf("%+v", res)
+		}
+		if got := requests.Load(); got != before {
+			t.Fatalf("matching marker should not download: requests=%d", got-before)
+		}
+	})
+}
+
+func TestDecorativeNameInMiddleKeepsContiguousNumbers(t *testing.T) {
+	big := pngBytes(t, 400, 400)
+	logo := pngBytes(t, 10, 10)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/post/77777", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>连续 - 站</title></head><body>
+          <img src="/logo.png"><img src="/a.png"><img src="/b.png"></body></html>`)
+	})
+	image := func(data []byte) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(data)
+		}
+	}
+	mux.HandleFunc("/logo.png", image(logo))
+	mux.HandleFunc("/a.png", image(big))
+	mux.HandleFunc("/b.png", image(big))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pageURL := srv.URL + "/post/77777"
+	dataDir := t.TempDir()
+	d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: dataDir}
+	res := d.Download(context.Background(), pageURL, false)
+	if res.Status != result.Downloaded || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	files := res.Posts[0].Files
+	if len(files) != 2 {
+		t.Fatalf("files=%v", files)
+	}
+	if filepath.Base(files[0]) != "001.png" || filepath.Base(files[1]) != "002.png" {
+		t.Fatalf("files=%v", files)
+	}
+	dir := filepath.Dir(files[0])
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "003") {
+			t.Fatalf("decorative candidate left a sequence hole: %s", entry.Name())
+		}
+	}
+	if !strings.Contains(res.Message, "过滤 1 项") {
+		t.Fatalf("message=%q", res.Message)
+	}
+}
+
+func TestTitleStripsAuthorTail(t *testing.T) {
+	img := pngBytes(t, 400, 400)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/post/44444", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>正文 来自 作者甲 - 示例站</title></head><body>
+          <img src="/a.png"></body></html>`)
+	})
+	mux.HandleFunc("/a.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(img)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	pageURL := srv.URL + "/post/44444"
+	dataDir := t.TempDir()
+	d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: dataDir}
+	res := d.Download(context.Background(), pageURL, false)
+	if res.Status != result.Downloaded || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	post := res.Posts[0]
+	if strings.Contains(post.Title, "正文 来自") {
+		t.Fatalf("title still contains author tail: %q", post.Title)
+	}
+	rel, err := filepath.Rel(dataDir, post.Files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rel, "正文 来自") {
+		t.Fatalf("path still contains author tail: %q", rel)
+	}
+	wantRel := filepath.Join(
+		"download", sites.Detect(pageURL), "作者甲", "untitled_44444", "001.png",
+	)
+	if rel != wantRel {
+		t.Fatalf("relative path=%q want %q", rel, wantRel)
 	}
 }
 
@@ -308,21 +487,26 @@ func TestDownloadUsesAuthorFromRawTitle(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: t.TempDir()}
-	res := d.Download(context.Background(), srv.URL+"/post/99999", false)
+	pageURL := srv.URL + "/post/99999"
+	dataDir := t.TempDir()
+	d := &Downloader{HTTP: httpclient.New(httpclient.Options{}), DataDir: dataDir}
+	res := d.Download(context.Background(), pageURL, false)
 	if res.Status != result.Downloaded || len(res.Posts) != 1 {
 		t.Fatalf("%+v", res)
 	}
 	post := res.Posts[0]
-	if post.Author != "摄影师甲" || post.Title != "山间清晨 正文 来自 摄影师甲" {
+	if post.Author != "摄影师甲" || post.Title != "山间清晨" {
 		t.Fatalf("%+v", post)
 	}
-	dir := filepath.Dir(post.Files[0])
-	if got := filepath.Base(dir); got != "山间清晨 正文 来自 摄影师甲_99999" {
-		t.Fatalf("dir=%q", got)
+	rel, err := filepath.Rel(dataDir, post.Files[0])
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := filepath.Base(filepath.Dir(dir)); got != "摄影师甲" {
-		t.Fatalf("author dir=%q", got)
+	wantRel := filepath.Join(
+		"download", sites.Detect(pageURL), "摄影师甲", "山间清晨_99999", "001.png",
+	)
+	if rel != wantRel {
+		t.Fatalf("relative path=%q want %q", rel, wantRel)
 	}
 }
 

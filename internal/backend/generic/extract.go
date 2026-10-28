@@ -31,6 +31,10 @@ var (
 	// titleAuthorPattern 匹配 <title> 里的“正文 来自 作者 - 站点”尾巴。
 	titleAuthorPattern = regexp.MustCompile(`正文\s*来自\s*(.+?)\s*-\s*`)
 
+	// authorTailPattern 匹配剥离站点后缀后残留的“正文 来自 作者”片段，
+	// 目录名不应重复作者信息。
+	authorTailPattern = regexp.MustCompile(`(?s)\s*正文\s*来自\s*.+$`)
+
 	// backgroundImagePattern 匹配行内样式中的 background-image: url(...)，
 	// 兼容冒号/括号周围空白与单双引号。
 	backgroundImagePattern = regexp.MustCompile(
@@ -115,10 +119,11 @@ func ExtractCandidates(doc *goquery.Document, pageURL string) []Candidate {
 	return candidates
 }
 
-// ExtractTitle 返回清理过站点后缀的页面标题。
+// ExtractTitle 返回清理过站点后缀与作者尾巴的页面标题。
 //
 // 取 <title> 文本并去首尾空白；含 " - " 时保留最后一个 " - " 之前的
-// 部分（站点名/品牌后缀通常在末尾）。空标题回退 "untitled"。
+// 部分（站点名/品牌后缀通常在末尾）；再剥离“正文 来自 作者”尾段，避免
+// 作者信息在“作者目录/标题”里重复一层。空标题回退 "untitled"。
 func ExtractTitle(doc *goquery.Document) string {
 	if doc == nil {
 		return "untitled"
@@ -127,6 +132,7 @@ func ExtractTitle(doc *goquery.Document) string {
 	if idx := strings.LastIndex(title, " - "); idx >= 0 {
 		title = strings.TrimSpace(title[:idx])
 	}
+	title = strings.TrimSpace(authorTailPattern.ReplaceAllString(title, ""))
 	if title == "" {
 		return "untitled"
 	}
