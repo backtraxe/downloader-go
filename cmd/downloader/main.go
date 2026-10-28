@@ -10,6 +10,7 @@ import (
 
 	"github.com/backtraxe/downloader-go/internal/backend/douyin"
 	"github.com/backtraxe/downloader-go/internal/backend/generic"
+	"github.com/backtraxe/downloader-go/internal/backend/xhs"
 	"github.com/backtraxe/downloader-go/internal/backend/ytdlp"
 	"github.com/backtraxe/downloader-go/internal/dispatch"
 	"github.com/backtraxe/downloader-go/internal/httpclient"
@@ -48,10 +49,13 @@ func defaultDependencies(dataDir string) dependencies {
 	})
 	// 抖音后端的签名 UA 与 secure 客户端的 Chrome133 指纹保持一致。
 	douyinDownloader := &douyin.Downloader{HTTP: secure, DataDir: dataDir}
+	// 小红书与抖音共用同一 Chrome133 客户端（页面与媒体请求）。
+	xhsDownloader := &xhs.Downloader{HTTP: secure, DataDir: dataDir}
 	d := &dispatch.Dispatcher{
 		HTTP:    secure,
 		DataDir: dataDir,
 		Handlers: dispatch.Handlers{
+			XHS:         xhsDownloader.Download,
 			DouyinNote:  douyinDownloader.DownloadNote,
 			DouyinVideo: douyinDownloader.DownloadVideo,
 			YTDLP:       ytdlp.New(dataDir).Download,
