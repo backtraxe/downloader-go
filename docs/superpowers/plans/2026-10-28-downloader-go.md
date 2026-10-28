@@ -958,7 +958,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-`DownloadFile` 流程：`!Force` 时先 `fsutil.ExistingByStem` 命中则直接返回；请求成功后按 `Content-Type`/URL 修正扩展名；`Force` 写 `path+".part"` 后 `os.Rename`，否则 `fsutil.UniquePath`；失败删除部分文件。`Filter` 在写盘前调用（用于 HTML 拦截）。重试仅对 `IsTransient`/`IsTransientStatus(429,5xx)`；默认 3 次，退避 `min(maxDelay, minDelay*2^attempt)` 加抖动。
+`DownloadFile` 流程：`!Force` 时先 `fsutil.ExistingByStem` 命中则直接返回；请求成功后按 `Content-Type`/URL 修正扩展名；`Force` 写 `path+".part"` 后 `os.Rename`，否则 `fsutil.UniquePath`；失败删除部分文件。`Filter` 在写盘前调用（用于 HTML 拦截）。重试仅对 `IsTransient(err)`/`IsTransientStatus(429,5xx)`；HTTP 状态错误只走 `IsTransientStatus`，不要再对包含 URL 的错误文本做 `IsTransient`（URL 里的 `503`/`eof` 会误判）。`IsTransient` 必须同时覆盖 Go 原生错误：`no such host`、`server misbehaving`、`connection was reset`、`http2: server sent goaway`、`http2: client connection lost`，并优先用 `errors.As` 识别 `*net.DNSError`（Temporary）、`syscall.ECONNRESET`/`ECONNREFUSED`、`io.ErrUnexpectedEOF`。默认 3 次，退避 `min(maxDelay, minDelay*2^attempt)` 加抖动。
 
 - [ ] **Step 4: 运行测试确认通过**
 
