@@ -5,12 +5,31 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/cookies"
 	"github.com/backtraxe/downloader-go/internal/sites"
 )
+
+// cookieSitePattern 限定归一化后的站点名只能是安全的文件名片段，避免拼
+// 路径时越出 cookies/ 目录。
+var cookieSitePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// normalizeCookieSite 归一化站点名：去空白、转小写、去掉末尾 .txt，并校验
+// 只含安全字符。import 与 check 共用，保证 Douyin/douyin.txt 命中同一文件。
+func normalizeCookieSite(raw string) (string, error) {
+	site := strings.ToLower(strings.TrimSpace(raw))
+	site = strings.TrimSuffix(site, ".txt")
+	if site == "" {
+		return "", fmt.Errorf("%q 不合法：站点名不能为空", raw)
+	}
+	if !cookieSitePattern.MatchString(site) {
+		return "", fmt.Errorf("%q 不合法：只允许小写字母、数字、点、下划线、连字符，且不能以符号开头", raw)
+	}
+	return site, nil
+}
 
 // cookieUsage 是 cookie 子命令的用法提示。
 const cookieUsage = `用法：
@@ -42,7 +61,12 @@ func runCookieImport(args []string, dataDir string, stdin io.Reader, stdout, std
 		fmt.Fprintln(stderr, "用法：downloader cookie import <site>")
 		return 2
 	}
-	path, err := cookies.Import(dataDir, args[0], stdin)
+	site, err := normalizeCookieSite(args[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "站点名非法：%v\n", err)
+		return 1
+	}
+	path, err := cookies.Import(dataDir, site, stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "导入 Cookie 失败：%v\n", err)
 		return 1
@@ -54,7 +78,23 @@ func runCookieImport(args []string, dataDir string, stdin io.Reader, stdout, std
 // runCookieCheck 体检指定站点；未指定站点时扫描 cookies/*.txt。任一文件
 // 缺失或存在必需键缺口时返回 1，否则返回 0。
 func runCookieCheck(args []string, dataDir string, stdout, stderr io.Writer) int {
-	siteNames := args
+	siteNames := make([]string, 0, len(args))
+	seen := make(map[string]bool, len(args))
+	for _, raw := range args {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		site, err := normalizeCookieSite(raw)
+		if err != nil {
+			fmt.Fprintf(stderr, "站点名非法：%v\n", err)
+			return 1
+		}
+		if seen[site] {
+			continue
+		}
+		seen[site] = true
+		siteNames = append(siteNames, site)
+	}
 	if len(siteNames) == 0 {
 		discovered, err := discoverCookieSites(dataDir)
 		if err != nil {

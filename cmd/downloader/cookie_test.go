@@ -138,6 +138,84 @@ func TestCookieCheckEmptyDirectory(t *testing.T) {
 	}
 }
 
+// TestCookieSiteNormalization 确认 import/check 共用归一化：大小写、`.txt`
+// 后缀与重复参数都命中同一个文件，且 import 归一后按站点格式落盘。
+func TestCookieSiteNormalization(t *testing.T) {
+	dir := t.TempDir()
+	var out, errOut bytes.Buffer
+	code := runWith([]string{"--data-dir", dir, "cookie", "import", "Douyin"},
+		strings.NewReader("Cookie: UIFID=u; ttwid=t"), &out, &errOut, dependencies{})
+	if code != 0 {
+		t.Fatalf("import code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	p := filepath.Join(dir, "cookies", "douyin.txt")
+	content, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("normalized file missing: %v", err)
+	}
+	// douyin 走 Netscape 格式，证明归一化发生在站点格式判断之前。
+	if !strings.HasPrefix(string(content), "# Netscape HTTP Cookie File") {
+		t.Fatalf("unexpected content: %q", content)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cookies", "Douyin.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unnormalized file should not exist, err=%v", err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = runWith([]string{"--data-dir", dir, "cookie", "check", "douyin.txt", "DOUYIN", "Douyin.txt", "douyin"},
+		strings.NewReader(""), &out, &errOut, dependencies{})
+	if code != 0 {
+		t.Fatalf("check code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	if got := strings.Count(out.String(), "✓ douyin"); got != 1 {
+		t.Fatalf("duplicates should collapse to one report, got %d: %q", got, out.String())
+	}
+}
+
+// TestCookieRejectsTraversalSite 确认站点名无法把文件写到 cookies/ 之外。
+func TestCookieRejectsTraversalSite(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "import parent", args: []string{"cookie", "import", "../evil"}},
+		{name: "check parent", args: []string{"cookie", "check", "../../etc/foo"}},
+		{name: "import nested", args: []string{"cookie", "import", "a/b"}},
+		{name: "import backslash", args: []string{"cookie", "import", `a\b`}},
+		{name: "import absolute", args: []string{"cookie", "import", filepath.Join(dir, "abs")}},
+		{name: "import dotdot", args: []string{"cookie", "import", ".."}},
+	}
+	for _, tt := range tests {
+		var out, errOut bytes.Buffer
+		args := append([]string{"--data-dir", dir}, tt.args...)
+		code := runWith(args, strings.NewReader("Cookie: a=b"), &out, &errOut, dependencies{})
+		if code != 1 {
+			t.Fatalf("%s: code=%d out=%q err=%q", tt.name, code, out.String(), errOut.String())
+		}
+		if !strings.Contains(errOut.String(), "站点名非法") {
+			t.Fatalf("%s: stderr=%q", tt.name, errOut.String())
+		}
+	}
+
+	for _, leaked := range []string{
+		filepath.Join(dir, "evil.txt"),
+		filepath.Join(root, "evil.txt"),
+		filepath.Join(root, "cookies", "evil.txt"),
+		filepath.Join(dir, "abs.txt"),
+	} {
+		if _, err := os.Stat(leaked); !os.IsNotExist(err) {
+			t.Fatalf("traversal wrote %s, err=%v", leaked, err)
+		}
+	}
+}
+
 // TestCookieCommandUsage 覆盖缺少子命令、未知子命令与 import 参数错误的用法提示。
 func TestCookieCommandUsage(t *testing.T) {
 	tests := [][]string{
