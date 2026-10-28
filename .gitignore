@@ -1,11 +1,13 @@
 # 下载产物与凭据，绝不提交
 /download/
 /cookies/
-config.json
+/config.json
 *.part
 
 # 构建产物
-dist/
+/dist/
+/downloader
+/downloader.exe
 
 # 内部流程文件
-.superpowers/
+/.superpowers/
