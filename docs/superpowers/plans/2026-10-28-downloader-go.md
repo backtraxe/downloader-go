@@ -2023,7 +2023,7 @@ git commit -m "feat: add cookie import and check subcommands"
 
 - [ ] **Step 1: 写 CI**
 
-`ci.yml`：`actions/setup-go@v5`（`go-version-file: go.mod`）、`go build ./...`、`go vet ./...`、`golangci/golangci-lint-action`、`go test ./...`。
+`ci.yml`：`actions/setup-go@v5`（`go-version-file: go.mod`）、`go build ./...`、`go vet ./...`、`golangci/golangci-lint-action@v9`（`version: v2.15.0`）、`go test ./...`。v9 action 对应 golangci-lint v2；不要用 `@v6` + `latest`（v6 传的是 v1 参数，会直接失败）。
 
 - [ ] **Step 2: 写 GoReleaser 配置**
 
