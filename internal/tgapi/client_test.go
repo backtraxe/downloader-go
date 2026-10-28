@@ -3,13 +3,16 @@ package tgapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCallUnwrapsResultAndErrors(t *testing.T) {
@@ -68,6 +71,8 @@ func TestCallNon2xxIncludesStatusAndBody(t *testing.T) {
 
 func TestCallMultipartUploadsFile(t *testing.T) {
 	dir := t.TempDir()
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
 	p := filepath.Join(dir, "a.jpg")
 	if err := os.WriteFile(p, []byte("JPEG"), 0o600); err != nil {
 		t.Fatal(err)
@@ -75,6 +80,9 @@ func TestCallMultipartUploadsFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/botT/sendPhoto" {
 			t.Errorf("path=%s", r.URL.Path)
+		}
+		if r.ContentLength <= 0 {
+			t.Errorf("content-length=%d", r.ContentLength)
 		}
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Errorf("parse multipart: %v", err)
@@ -104,6 +112,99 @@ func TestCallMultipartUploadsFile(t *testing.T) {
 	_, err := c.CallMultipart(context.Background(), "sendPhoto", map[string]string{"chat_id": "1"}, map[string]string{"photo": p})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(tmpDir); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
+
+func TestTransportErrorRedactsToken(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	c := New("SECRET_TOKEN")
+	c.BaseURL = "http://" + addr
+	if _, err := c.SendMessage(context.Background(), "1", "x"); err == nil {
+		t.Fatal("expected transport error")
+	} else if strings.Contains(err.Error(), "SECRET_TOKEN") {
+		t.Fatalf("token leaked: %v", err)
+	}
+}
+
+func TestCanceledContextRedactsTokenAndPreservesCause(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := New("SECRET_TOKEN")
+	c.BaseURL = srv.URL
+	_, err := c.SendMessage(ctx, "1", "x")
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if strings.Contains(err.Error(), "SECRET_TOKEN") {
+		t.Fatalf("token leaked: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cause lost: %v", err)
+	}
+}
+
+func TestErrorBodyRedactsToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "boom SECRET_TOKEN")
+	}))
+	defer srv.Close()
+	c := New("SECRET_TOKEN")
+	c.BaseURL = srv.URL
+	_, err := c.Call(context.Background(), "getMe", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "SECRET_TOKEN") {
+		t.Fatalf("token leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "<redacted>") {
+		t.Fatalf("token not marked redacted: %v", err)
+	}
+}
+
+func TestErrorBodyIsTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, strings.Repeat("x", maxResponseBody+100))
+	}))
+	defer srv.Close()
+	c := New("T")
+	c.BaseURL = srv.URL
+	_, err := c.Call(context.Background(), "getMe", nil)
+	if err == nil || !strings.Contains(err.Error(), "response truncated") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestErrorBodyTailKeepsValidUTF8(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, strings.Repeat("界", maxErrorBodyTail))
+	}))
+	defer srv.Close()
+	c := New("T")
+	c.BaseURL = srv.URL
+	_, err := c.Call(context.Background(), "getMe", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Fatalf("invalid UTF-8: %q", err.Error())
 	}
 }
 
