@@ -90,8 +90,9 @@ func defaultDependencies(dataDir string) dependencies {
 // 与 Python 版“粘贴链接循环下载”的用法一致。
 func runWith(args []string, stdin io.Reader, stdout, stderr io.Writer, deps dependencies) int {
 	dataDir, args := splitDataDir(args)
-	// dataDir 已由 run 用于构造依赖；runWith 本身暂不需要，保留解析以固定优先级。
-	_ = dataDir
+	// 与 run 使用同一口径解析数据目录（flag > 环境变量 > 当前目录），
+	// 供 cookie 等需要直接读写数据目录的子命令使用。
+	dataDir = resolveDataDir(dataDir)
 
 	if len(args) == 0 {
 		return runInteractive(nil, stdin, stdout, stderr, deps)
@@ -115,6 +116,8 @@ func runWith(args []string, stdin io.Reader, stdout, stderr io.Writer, deps depe
 			return 1
 		}
 		return deps.upload(context.Background(), args[1:], stdout, stderr)
+	case "cookie":
+		return runCookieCommand(args[1:], dataDir, stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "命令 %q 尚未接入\n", args[0])
 		return 2

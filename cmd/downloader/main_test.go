@@ -63,7 +63,7 @@ func TestRunCLIWithoutDispatchFails(t *testing.T) {
 
 func TestRunUnknownCommandKeepsNotImplementedExit(t *testing.T) {
 	var out bytes.Buffer
-	if code := runWith([]string{"cookie"}, strings.NewReader(""), &out, &out, dependencies{}); code != 2 {
+	if code := runWith([]string{"frobnicate"}, strings.NewReader(""), &out, &out, dependencies{}); code != 2 {
 		t.Fatalf("code=%d", code)
 	}
 	if !strings.Contains(out.String(), "尚未接入") {
