@@ -9,9 +9,9 @@
 
 ```bash
 pkg install curl tar
-curl -fsSL -o install_termux.sh \
-  https://raw.githubusercontent.com/backtraxe/downloader-go/main/install_termux.sh
-bash install_termux.sh
+curl -fsSL -o install-dl-go.sh \
+  https://raw.githubusercontent.com/backtraxe/downloader-go/main/install-dl-go.sh
+bash install-dl-go.sh
 ```
 
 脚本会识别 `aarch64`、下载 `linux/arm64` Release、校验 `checksums.txt` 中的
@@ -21,14 +21,14 @@ SHA256，并安装到 `$PREFIX/bin/dl-go`（无写权限时安装到 `~/bin`）�
 
 ```bash
 # 指定数据目录（写入 ~/.bashrc 与 ~/.zshrc 的 DOWNLOADER_HOME）
-bash install_termux.sh --data-dir "$HOME/dl-go-data"
+bash install-dl-go.sh --data-dir "$HOME/dl-go-data"
 
 # 指定版本
-DOWNLOADER_VERSION=v0.1.0 bash install_termux.sh
+DOWNLOADER_VERSION=v0.1.0 bash install-dl-go.sh
 
 # 从 Python 版迁移：复制 cookies/ 与 config.json，
 # 新目录没有 download/ 时符号链接到旧目录的 download/
-bash install_termux.sh --data-dir "$HOME/dl-go-data" \
+bash install-dl-go.sh --data-dir "$HOME/dl-go-data" \
   --migrate-from "$HOME/old-dl-go-data"
 ```
 

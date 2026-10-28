@@ -255,7 +255,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 - 版本注入：`-ldflags "-s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}"`。
 - Release Notes 自动生成；无需额外 secret（使用内置 `GITHUB_TOKEN`）。
 
-### 7.3 `install_termux.sh`
+### 7.3 `install-dl-go.sh`
 
 - 识别 `uname -m`（aarch64/armv7l）。
 - 通过 GitHub Releases API 或固定 latest 下载 URL 获取对应 tarball。
@@ -274,7 +274,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 1. **M1 基础骨架**：`config`/`sites`/`result`/`fsutil`/`httpclient`/`dispatch`；`run` 子命令；yt-dlp 与 generic 后端；离线测试。
 2. **M2 站点解析**：xhs、douyin 图文/视频、签名移植；fixture 与黄金测试。
 3. **M3 Telegram**：上传规划、转码、Bot API 客户端、bot 长轮询、CLI 直发。
-4. **M4 交付**：CI、GoReleaser、`install_termux.sh`、README/AGENTS.md、迁移说明。
+4. **M4 交付**：CI、GoReleaser、`install-dl-go.sh`、README/AGENTS.md、迁移说明。
 
 每个里程碑以“离线测试通过 + 可手动跑通对应入口”为完成标准。
 

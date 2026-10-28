@@ -42,7 +42,7 @@ goreleaser check
 goreleaser release --snapshot --clean
 
 # 安装脚本语法检查
-bash -n install_termux.sh
+bash -n install-dl-go.sh
 ```
 
 单元测试必须离线：使用 `httptest.Server` 与 `testdata/` 中的脱敏 fixture，

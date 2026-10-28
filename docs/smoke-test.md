@@ -124,7 +124,7 @@ HTTP 服务已停止，端口 18080 不再响应。
 
 以下链路本轮**未**运行、**未**验证，不能视为通过：
 
-- Termux（aarch64/Android）上的安装与运行，包括 `install_termux.sh`。
+- Termux（aarch64/Android）上的安装与运行，包括 `install-dl-go.sh`。
 - 真实小红书（xhs）与抖音（douyin）下载，包括 Cookie 鉴权与签名逻辑。
 - `yt-dlp` 后端（未安装 `yt-dlp`，未测第三方站点）。
 - Telegram 机器人 `bot`、`upload` 与相册/视频回传、caption 标签。

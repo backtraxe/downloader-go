@@ -2014,12 +2014,12 @@ git commit -m "feat: add cookie import and check subcommands"
 
 **Files:**
 - Create: `.github/workflows/ci.yml`、`.github/workflows/release.yml`、`.goreleaser.yaml`
-- Create: `install_termux.sh`
+- Create: `install-dl-go.sh`
 - Modify: `README.md`、`AGENTS.md`、`.gitignore`
 
 **Interfaces:**
 - Produces: push/PR 跑测试与 lint；tag `v*` 产出 Release。
-- Produces: `install_termux.sh` 支持 `--data-dir`、`--migrate-from`、`DOWNLOADER_VERSION`。
+- Produces: `install-dl-go.sh` 支持 `--data-dir`、`--migrate-from`、`DOWNLOADER_VERSION`。
 
 - [ ] **Step 1: 写 CI**
 
@@ -2060,7 +2060,7 @@ checksum:
 
 - [ ] **Step 4: 写安装脚本**
 
-`install_termux.sh`：`set -euo pipefail`；识别 `uname -m`（`aarch64` → `linux_arm64`）；从 `https://api.github.com/repos/backtraxe/downloader-go/releases/latest` 取 asset URL；下载 tar.gz 与 `checksums.txt`，`sha256sum -c`；安装到 `$PREFIX/bin/downloader`；检查 `command -v yt-dlp ffmpeg`；处理 `--data-dir`（幂等写 shell rc）与 `--migrate-from`（复制 cookies/config、符号链接 download）。
+`install-dl-go.sh`：`set -euo pipefail`；识别 `uname -m`（`aarch64` → `linux_arm64`）；从 `https://api.github.com/repos/backtraxe/downloader-go/releases/latest` 取 asset URL；下载 tar.gz 与 `checksums.txt`，`sha256sum -c`；安装到 `$PREFIX/bin/downloader`；检查 `command -v yt-dlp ffmpeg`；处理 `--data-dir`（幂等写 shell rc）与 `--migrate-from`（复制 cookies/config、符号链接 download）。
 
 - [ ] **Step 5: 写文档**
 
@@ -2071,7 +2071,7 @@ checksum:
 ```bash
 go test ./...
 go vet ./...
-bash -n install_termux.sh
+bash -n install-dl-go.sh
 goreleaser check   # 若本机安装 goreleaser
 ```
 
@@ -2080,7 +2080,7 @@ Expected: 全部通过。
 - [ ] **Step 7: 提交**
 
 ```bash
-git add .github .goreleaser.yaml install_termux.sh README.md AGENTS.md .gitignore
+git add .github .goreleaser.yaml install-dl-go.sh README.md AGENTS.md .gitignore
 git commit -m "ci: add build, lint and release pipeline"
 ```
 
@@ -2110,7 +2110,7 @@ Expected: `version` 输出正确；通用抓取在 `/tmp/dl-smoke/download/examp
 - [ ] **Step 2: Termux 冒烟**
 
 - 安装 `pkg install yt-dlp ffmpeg`。
-- 用 `install_termux.sh` 安装二进制。
+- 用 `install-dl-go.sh` 安装二进制。
 - 验证：`downloader run` 下载一个通用网页；带 Cookie 下载小红书/抖音各一条；`yt-dlp` 站点一条。
 - 配置 `config.json` 的 `telegram` 段，`downloader bot` 发一条链接，确认相册/视频回传与 caption 标签。
 - 记录每条链路的实际结果到 `docs/smoke-test.md`。

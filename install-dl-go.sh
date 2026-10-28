@@ -12,7 +12,7 @@ MIGRATE_FROM_SET=0
 
 usage() {
   cat <<'EOF'
-用法: bash install_termux.sh [选项]
+用法: bash install-dl-go.sh [选项]
 
 选项:
   --data-dir DIR       设置数据目录，并幂等写入 ~/.bashrc 与 ~/.zshrc
