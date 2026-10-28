@@ -1661,6 +1661,7 @@ package tgapi
 
 import (
     "context"
+    "net"
     "net/http"
     "net/http/httptest"
     "net/url"
@@ -1710,6 +1711,20 @@ func TestCallMultipartUploadsFile(t *testing.T) {
     _, err := c.CallMultipart(context.Background(), "sendPhoto", map[string]string{"chat_id": "1"}, map[string]string{"photo": p})
     if err != nil { t.Fatal(err) }
 }
+
+func TestTransportErrorRedactsToken(t *testing.T) {
+    ln, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    addr := ln.Addr().String()
+    ln.Close()
+    c := New("SECRET_TOKEN")
+    c.BaseURL = "http://" + addr
+    if _, err := c.SendMessage(context.Background(), "1", "x"); err == nil {
+        t.Fatal("expected transport error")
+    } else if strings.Contains(err.Error(), "SECRET_TOKEN") {
+        t.Fatalf("token leaked: %v", err)
+    }
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1719,7 +1734,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-统一响应结构 `{"ok":bool,"result":...,"description":...}`；`Call` 用 `url.Values` 表单；`CallMultipart` 用 `mime/multipart`，文件字段按 `files` map 顺序写入（map 顺序无所谓，但测试只读一个文件）。`SendMediaGroup` 构造 `media` JSON，文件用 `attach://file0` 形式并在 multipart 中附带。默认 `BaseURL = "https://api.telegram.org"`。
+统一响应结构 `{"ok":bool,"result":...,"description":...}`；`Call` 用 `url.Values` 表单；`CallMultipart` 用 `mime/multipart`，文件字段按 `files` map 排序写入。**multipart 不能整包缓存在内存**：写到 `os.CreateTemp` 临时文件，`Seek(0)` 后作为请求体并显式设置 `ContentLength`（Termux 上 50MB 视频/相册会 OOM）；结束后删除临时文件。`SendMediaGroup` 构造 `media` JSON，文件用 `attach://file0` 形式并在 multipart 中附带。默认 `BaseURL = "https://api.telegram.org"`。**所有返回给调用方的传输错误必须把 bot token 替换为 `<redacted>`**（`url.Error` 的 URL 含 token），响应体读取加 `io.LimitReader`，错误 body tail 截断到合法 UTF-8 边界。
 
 - [ ] **Step 4: 运行测试确认通过**
 
