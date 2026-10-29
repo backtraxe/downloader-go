@@ -1,0 +1,599 @@
+// Package xhs 实现小红书笔记后端解析与下载。
+//
+// 口径沿用 Python 版 core/xhs_downloader.py：
+//   - 笔记详情来自页面内嵌的 window.__INITIAL_STATE__，先归一化 JSON 值
+//     语境的 undefined 再解码，取 note.noteDetailMap 的第一条；
+//   - 图片优先原图 fileId 直链，回退 urlDefault/urlPre/infoList；
+//   - 实况照片的图片与视频按 imageList 下标配对（001.heic + 001.mp4）；
+//   - 笔记级视频从 h264 流里选画质最高的一档，落盘 video.mp4；
+//   - 失效短链会被重定向到首页且 noteDetailMap 为空，需与“页面结构变更”
+//     区分开。
+//
+// 本文件只负责纯解析：URL/状态提取、JSON 归一化与结构映射，不发起网络
+// 请求。下载入口见 xhs.go。
+package xhs
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/backtraxe/downloader-go/internal/media"
+)
+
+// ErrNoNoteData 表示 __INITIAL_STATE__ 中缺少 noteDetailMap 或其为空。
+var ErrNoNoteData = errors.New("xhs: no note data")
+
+// ErrNoInitialState 表示页面中没有 window.__INITIAL_STATE__。
+var ErrNoInitialState = errors.New("xhs: no __INITIAL_STATE__")
+
+// Image 是笔记中的一张图片。Ext 为带前导点的落盘扩展名；无法从 URL
+// 判断时为空串，由 httpclient.DownloadFile 按 Content-Type 修正。
+type Image struct {
+	URL string
+	Ext string
+}
+
+// Pair 是一张实况照片（图片 + 配套视频直链）。
+type Pair struct {
+	ImageURL string
+	VideoURL string
+}
+
+// Note 是从 __INITIAL_STATE__ 提取出的笔记信息。
+type Note struct {
+	ID       string
+	Title    string
+	Desc     string
+	Author   string
+	Images   []Image
+	VideoURL string
+	// LivePairs 与 Images 按 imageList 下标对应，实况视频沿用图片序号。
+	LivePairs []Pair
+
+	// tags 用于 title/desc 都为空时的目录基名兜底（Python tagList 口径）。
+	tags []string
+	// liveByIndex 与 Images 等长，记录每张图对应的实况视频（可为空）。
+	liveByIndex []string
+	// hasVideo 表示页面声明了 note.video；videoStreamKeys 是其中的流键，
+	// 用于 VideoURL 解析失败时定位页面结构变化。
+	hasVideo        bool
+	videoStreamKeys []string
+}
+
+// initialStatePattern 是兜底提取器（贪婪匹配到 </script> 前最后一个 }）。
+// 正常路径用 extractInitialState 做括号配平，避免状态对象后面还有别的
+// JS 语句时把整段脚本一起吃进来。
+var initialStatePattern = regexp.MustCompile(`(?s)window\.__INITIAL_STATE__\s*=\s*(\{.*\})\s*</script>`)
+
+// undefinedPattern 只替换 JSON 值语境的 undefined：前一个字符是 :、[、,
+// 或空白，且后接词边界。紧跟在引号/其他字符后的字符串内容不受影响。
+var undefinedPattern = regexp.MustCompile(`([\[:,\s])\s*undefined\b`)
+
+// 小红书内嵌状态偶尔会带非 JSON 的 JS 字面量（new Date(...)、NaN、
+// Infinity）。这些字段与笔记详情无关，替换成 null 即可让整段状态可解析。
+var nonFinitePattern = regexp.MustCompile(`-?Infinity\b|\bNaN\b`)
+
+// notePathPattern 匹配带作品 ID 的笔记页路径。
+var notePathPattern = regexp.MustCompile(`(?i)/(?:explore|discovery/item|notes)/[^/]+`)
+
+// tagMarkerPattern 把 "#tag[话题]#" 归一化为 "#tag"。
+var tagMarkerPattern = regexp.MustCompile(`#([^\s#\[\]]+)\[话题\]#`)
+
+// HasXsecToken 判断链接 query 是否带非空 xsec_token。
+func HasXsecToken(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(u.Query().Get("xsec_token")) != ""
+}
+
+// NormalizeUndefined 把值语境的 undefined 替换为 null。
+//
+// 与 core/utils.py:normalize_xhs_state_json 的匹配口径一致，但不额外插入
+// 空格，保证归一化结果是最小改动（仍是合法 JSON）。
+func NormalizeUndefined(raw string) string {
+	out := undefinedPattern.ReplaceAllString(raw, "${1}null")
+	out = nonFinitePattern.ReplaceAllString(out, "null")
+	out = replaceNewExpressions(out)
+	return out
+}
+
+// replaceNewExpressions 把字符串外的 `new Foo(...)` 整体替换为 null。
+// 括号配平处理 new Map([...]) / new Set([...]) 这类嵌套参数；字符串内的
+// "new" 不受影响。
+func replaceNewExpressions(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '"' {
+			end := skipJSONString(s, i)
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		if hasWordAt(s, i, "new") {
+			j := i + 3
+			for j < len(s) && isSpaceByte(s[j]) {
+				j++
+			}
+			k := j
+			for k < len(s) && isJSIdentByte(s[k]) {
+				k++
+			}
+			if k > j {
+				m := k
+				for m < len(s) && isSpaceByte(s[m]) {
+					m++
+				}
+				if m < len(s) && s[m] == '(' {
+					if end, ok := matchParen(s, m); ok {
+						b.WriteString("null")
+						i = end + 1
+						continue
+					}
+				}
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func skipJSONString(s string, start int) int {
+	for i := start + 1; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == '"' {
+			return i + 1
+		}
+	}
+	return len(s)
+}
+
+func matchParen(s string, open int) (int, bool) {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '"':
+			i = skipJSONString(s, i) - 1
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func hasWordAt(s string, i int, word string) bool {
+	if !strings.HasPrefix(s[i:], word) {
+		return false
+	}
+	if i > 0 && isJSIdentByte(s[i-1]) {
+		return false
+	}
+	end := i + len(word)
+	return end >= len(s) || !isJSIdentByte(s[end])
+}
+
+func isJSIdentByte(c byte) bool {
+	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
+
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// decodeStateError 在 JSON 语法错误时附带出错位置前后的片段，便于定位
+// 小红书新出现的 JS 字面量；片段限制在 160 字节内，不打印整页。
+func decodeStateError(state string, err error) error {
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		off := int(syn.Offset)
+		start := off - 80
+		if start < 0 {
+			start = 0
+		}
+		end := off + 80
+		if end > len(state) {
+			end = len(state)
+		}
+		if start < len(state) {
+			return fmt.Errorf("xhs: decode initial state: %w (near %q)", err, state[start:end])
+		}
+	}
+	return fmt.Errorf("xhs: decode initial state: %w", err)
+}
+
+// extractInitialState 从 marker 后的第一个 { 开始做括号配平，返回完整的
+// 状态对象。字符串内的括号/转义不会影响计数。页面结构异常时返回 false，
+// 由调用方回退到正则提取。
+func extractInitialState(html string) (string, bool) {
+	idx := strings.Index(html, "window.__INITIAL_STATE__")
+	if idx < 0 {
+		return "", false
+	}
+	rest := html[idx:]
+	eq := strings.IndexByte(rest, '=')
+	if eq < 0 {
+		return "", false
+	}
+	start := strings.IndexByte(rest[eq+1:], '{')
+	if start < 0 {
+		return "", false
+	}
+	start += eq + 1
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(rest); i++ {
+		c := rest[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// ParseInitialState 从页面 HTML 中提取第一条笔记。
+//
+// 找不到 window.__INITIAL_STATE__ 返回 ErrNoInitialState；noteDetailMap
+// 缺失或为空返回 ErrNoNoteData；JSON 损坏时返回带原因的错误。
+func ParseInitialState(html string) (*Note, error) {
+	raw, ok := extractInitialState(html)
+	if !ok {
+		match := initialStatePattern.FindStringSubmatch(html)
+		if match == nil {
+			return nil, ErrNoInitialState
+		}
+		raw = match[1]
+	}
+	stateJSON := NormalizeUndefined(raw)
+
+	var top struct {
+		Note struct {
+			NoteDetailMap json.RawMessage `json:"noteDetailMap"`
+		} `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(stateJSON), &top); err != nil {
+		return nil, decodeStateError(stateJSON, err)
+	}
+
+	key, detail, err := firstDetail(top.Note.NoteDetailMap)
+	if err != nil {
+		return nil, err
+	}
+
+	var entry struct {
+		Note struct {
+			NoteID string `json:"noteId"`
+			Title  string `json:"title"`
+			Desc   string `json:"desc"`
+			User   struct {
+				Nickname string `json:"nickname"`
+				NickName string `json:"nickName"`
+			} `json:"user"`
+			ImageList []rawImage `json:"imageList"`
+			Video     *rawVideo  `json:"video"`
+			TagList   []struct {
+				Name string `json:"name"`
+			} `json:"tagList"`
+		} `json:"note"`
+	}
+	if err := json.Unmarshal(detail, &entry); err != nil {
+		return nil, fmt.Errorf("xhs: decode note detail: %w", err)
+	}
+
+	note := &Note{
+		ID:     key,
+		Title:  entry.Note.Title,
+		Desc:   entry.Note.Desc,
+		Author: entry.Note.User.Nickname,
+	}
+	if note.ID == "" {
+		note.ID = entry.Note.NoteID
+	}
+	if note.Author == "" {
+		note.Author = entry.Note.User.NickName
+	}
+	for _, tag := range entry.Note.TagList {
+		if tag.Name != "" {
+			note.tags = append(note.tags, tag.Name)
+		}
+	}
+
+	note.Images = make([]Image, 0, len(entry.Note.ImageList))
+	note.liveByIndex = make([]string, len(entry.Note.ImageList))
+	for index, raw := range entry.Note.ImageList {
+		imgURL := ensureHTTPS(imageURL(raw))
+		note.Images = append(note.Images, Image{
+			URL: imgURL,
+			Ext: media.GuessExtension(imgURL, "", ""),
+		})
+		liveURL := ensureHTTPS(livePhotoURL(raw))
+		note.liveByIndex[index] = liveURL
+		if liveURL != "" {
+			note.LivePairs = append(note.LivePairs, Pair{ImageURL: imgURL, VideoURL: liveURL})
+		}
+	}
+	if entry.Note.Video != nil {
+		note.hasVideo = true
+		videoLink, streamKeys := videoURL(*entry.Note.Video)
+		note.VideoURL = ensureHTTPS(videoLink)
+		note.videoStreamKeys = streamKeys
+	}
+	return note, nil
+}
+
+// firstDetail 按 JSON 对象顺序取 noteDetailMap 的第一条键值。
+//
+// 不用 map[string]json.RawMessage 解码：Go 的 map 遍历顺序随机，而
+// Python 取的是插入顺序的第一条。这里用 Token 流保序。
+func firstDetail(raw json.RawMessage) (string, json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", nil, ErrNoNoteData
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	token, err := dec.Token()
+	if err != nil {
+		return "", nil, fmt.Errorf("xhs: decode noteDetailMap: %w", err)
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return "", nil, ErrNoNoteData
+	}
+	if !dec.More() {
+		return "", nil, ErrNoNoteData
+	}
+	keyToken, err := dec.Token()
+	if err != nil {
+		return "", nil, fmt.Errorf("xhs: decode noteDetailMap key: %w", err)
+	}
+	key, ok := keyToken.(string)
+	if !ok {
+		return "", nil, ErrNoNoteData
+	}
+	var detail json.RawMessage
+	if err := dec.Decode(&detail); err != nil {
+		return "", nil, fmt.Errorf("xhs: decode note detail: %w", err)
+	}
+	return key, detail, nil
+}
+
+// IsHomepageLanding 判断最终落地页是否为首页且没有任何笔记数据。
+//
+// 失效短链会被 307 到 www.xiaohongshu.com（或 /explore），页面 200 正常、
+// 无 404/风控文案，但 noteDetailMap 为空。路径带作品 ID 的笔记页即使
+// noteDetailMap 为空也不算首页落地（那通常是 404/风控，另行提示）。
+func IsHomepageLanding(finalURL, body string) bool {
+	if !noteDetailMapEmpty(body) {
+		return false
+	}
+	path := ""
+	if u, err := url.Parse(strings.TrimSpace(finalURL)); err == nil {
+		path = strings.TrimRight(u.Path, "/")
+	}
+	if path == "" || path == "/explore" {
+		return true
+	}
+	return !notePathPattern.MatchString(path)
+}
+
+// noteDetailMapEmpty 判断页面/JSON 中的 noteDetailMap 是否缺失或为空。
+// body 既可以是完整 HTML，也可以是测试里直接给的 JSON。
+func noteDetailMapEmpty(body string) bool {
+	raw := ""
+	if state, ok := extractInitialState(body); ok {
+		raw = state
+	} else if match := initialStatePattern.FindStringSubmatch(body); match != nil {
+		raw = match[1]
+	} else {
+		trimmed := strings.TrimSpace(body)
+		if strings.HasPrefix(trimmed, "{") {
+			raw = trimmed
+		}
+	}
+	if raw == "" {
+		return true
+	}
+	var top struct {
+		Note struct {
+			NoteDetailMap map[string]json.RawMessage `json:"noteDetailMap"`
+		} `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(NormalizeUndefined(raw)), &top); err != nil {
+		return true
+	}
+	return len(top.Note.NoteDetailMap) == 0
+}
+
+// rawImage 对应 imageList 中的一项；只声明解析需要的字段。
+type rawImage struct {
+	FileID     string `json:"fileId"`
+	URLDefault string `json:"urlDefault"`
+	URLPre     string `json:"urlPre"`
+	URL        string `json:"url"`
+	InfoList   []struct {
+		URL string `json:"url"`
+	} `json:"infoList"`
+	LivePhoto bool                   `json:"livePhoto"`
+	Stream    map[string][]rawStream `json:"stream"`
+}
+
+// rawVideo 对应 note.video。
+type rawVideo struct {
+	URL   string `json:"url"`
+	Media struct {
+		// Stream 的键随笔记编码变化：h264/h265/av1 都可能出现，新笔记
+		// 常常不再提供 h264。只用 map 解码，具体优先级见 videoStreamOrder。
+		Stream map[string][]rawStream `json:"stream"`
+	} `json:"media"`
+}
+
+// rawStream 是视频流/实况视频的一档。
+type rawStream struct {
+	MasterURL    string   `json:"masterUrl"`
+	BackupURLs   []string `json:"backupUrls"`
+	URL          string   `json:"url"`
+	QualityType  string   `json:"qualityType"`
+	VideoBitrate float64  `json:"videoBitrate"`
+}
+
+// videoStreamOrder 是笔记级视频的编码优先级。小红书有两套流键名：
+// h264/h265/h266/av1，以及等价的 EF4/EF5/EF6/EF7（EF4=h264…EF7=av1）。
+// h264 兼容性最好，优先选；没有时依次回退，避免“有视频却不出 video.mp4”。
+var videoStreamOrder = []string{
+	"h264", "ef4",
+	"h265", "hevc", "ef5",
+	"h266", "vvc", "ef6",
+	"av1", "ef7",
+}
+
+// streamURL 取一档流的直链：masterUrl → url → backupUrls[0]。
+func streamURL(stream rawStream) string {
+	if stream.MasterURL != "" {
+		return stream.MasterURL
+	}
+	if stream.URL != "" {
+		return stream.URL
+	}
+	for _, backup := range stream.BackupURLs {
+		if backup != "" {
+			return backup
+		}
+	}
+	return ""
+}
+
+// qualityRank 把 qualityType 映射为可比较的画质档位（LD < SD < HD）。
+func qualityRank(s rawStream) (int, float64) {
+	switch strings.ToUpper(s.QualityType) {
+	case "LD":
+		return 1, s.VideoBitrate
+	case "SD":
+		return 2, s.VideoBitrate
+	case "HD":
+		return 3, s.VideoBitrate
+	default:
+		return 0, s.VideoBitrate
+	}
+}
+
+// bestStream 选画质最高的一档；没有可用直链的候选跳过。
+func bestStream(streams []rawStream) string {
+	best := ""
+	var bestRank int
+	var bestBitrate float64
+	for _, stream := range streams {
+		candidate := streamURL(stream)
+		if candidate == "" {
+			continue
+		}
+		rank, bitrate := qualityRank(stream)
+		if best == "" || rank > bestRank || (rank == bestRank && bitrate > bestBitrate) {
+			best = candidate
+			bestRank = rank
+			bestBitrate = bitrate
+		}
+	}
+	return best
+}
+
+// imageURL 复刻 Python extract_image_url 的优先级：
+// fileId 原图直链 → urlDefault → urlPre → url → infoList[0].url。
+func imageURL(img rawImage) string {
+	if img.FileID != "" {
+		return "https://ci.xiaohongshu.com/" + img.FileID
+	}
+	if img.URLDefault != "" {
+		return img.URLDefault
+	}
+	if img.URLPre != "" {
+		return img.URLPre
+	}
+	if img.URL != "" {
+		return img.URL
+	}
+	for _, info := range img.InfoList {
+		if info.URL != "" {
+			return info.URL
+		}
+	}
+	return ""
+}
+
+// livePhotoURL 从实况照片的 stream 中取首个非空档位（EF4→EF7）的最高画质。
+func livePhotoURL(img rawImage) string {
+	if !img.LivePhoto {
+		return ""
+	}
+	for _, key := range []string{"EF4", "EF5", "EF6", "EF7"} {
+		if candidate := bestStream(img.Stream[key]); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// videoURL 按 h264 → h265 → av1 选最高画质；都为空时回退顶层 url。
+// 同时返回页面实际提供的流键，供“有视频但没直链”时输出可定位的日志。
+func videoURL(video rawVideo) (string, []string) {
+	keys := make([]string, 0, len(video.Media.Stream))
+	byLower := make(map[string][]rawStream, len(video.Media.Stream))
+	for key, streams := range video.Media.Stream {
+		keys = append(keys, key)
+		byLower[strings.ToLower(key)] = streams
+	}
+	sort.Strings(keys)
+	for _, key := range videoStreamOrder {
+		if candidate := bestStream(byLower[key]); candidate != "" {
+			return candidate, keys
+		}
+	}
+	return video.URL, keys
+}
+
+// ensureHTTPS 把协议相对（//）与 http:// 的媒体链接统一升级为 https://。
+// 小红书 CDN 图片直链常以 http:// 返回，部分节点仅稳定支持 HTTPS。
+func ensureHTTPS(rawURL string) string {
+	if strings.HasPrefix(rawURL, "//") {
+		return "https:" + rawURL
+	}
+	if strings.HasPrefix(rawURL, "http://") {
+		return "https://" + strings.TrimPrefix(rawURL, "http://")
+	}
+	return rawURL
+}

@@ -68,13 +68,13 @@ func main() {
         raw, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, network, addr)
         if err != nil { return nil, err }
         host, _, _ := net.SplitHostPort(addr)
-        u := utls.UClient(raw, &utls.Config{ServerName: host, NextProtos: []string{"h2", "http/1.1"}}, utls.HelloChrome_155)
+        u := utls.UClient(raw, &utls.Config{ServerName: host, NextProtos: []string{"h2", "http/1.1"}}, utls.HelloChrome_133)
         if err := u.HandshakeContext(ctx); err != nil { raw.Close(); return nil, err }
         return u, nil
     }
     tr := &http2.Transport{DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) { return dial(ctx, network, addr) }}
     req, _ := http.NewRequest("GET", target, nil)
-    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36")
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
     req.Header.Set("Cookie", cookie)
     resp, err := (&http.Client{Transport: tr}).Do(req)
     if err != nil { panic(err) }
@@ -179,7 +179,7 @@ module github.com/backtraxe/downloader-go
 go 1.27
 ```
 
-`cmd/downloader/main.go` 定义 `var version, commit, date = "dev", "none", "unknown"`，`dependencies` 先只有 `dispatch func(context.Context, string, bool) result.Result`；`runWith` 用 `strings.TrimPrefix` 手动剥离全局 `--data-dir`，再按 `version` 分派；未知命令打印用法并返回 2。`version` 输出：
+`cmd/downloader/main.go` 定义 `var version, commit, date = "dev", "none", "unknown"`；Task 1 的 `dependencies` 先定义为空结构体 `type dependencies struct{}`（`result` 包要到 Task 2 才存在），`runWith` 用 `strings.TrimPrefix` 手动剥离全局 `--data-dir`，再按 `version` 分派；其他命令先打印“尚未接入”并返回 2。Task 11 再把 `dispatch func(context.Context, string, bool) result.Result` 加进 `dependencies`。`version` 输出：
 
 ```text
 downloader dev (commit none, built unknown)
@@ -427,6 +427,9 @@ func TestDetect(t *testing.T) {
         "https://youtu.be/x":                    "youtube",
         "https://instagr.am/x":                  "instagram",
         "https://t.co/x":                        "twitter",
+        "https://x.com/a":                       "twitter",
+        "https://netflix.com/a":                 "netflix.com",
+        "https://next.com/a":                    "next.com",
         "https://example.com/a":                 "example.com",
         "http://localhost:8080/a":               "localhost_8080",
     }
@@ -453,6 +456,12 @@ func TestExtractURLsTrimsCJK(t *testing.T) {
     if !reflect.DeepEqual(got, want) { t.Fatalf("%v want %v", got, want) }
 }
 
+func TestExtractURLsUnicodeWhitespace(t *testing.T) {
+    got := ExtractURLs("https://a.com/x https://b.com/y　hello")
+    want := []string{"https://a.com/x", "https://b.com/y"}
+    if !reflect.DeepEqual(got, want) { t.Fatalf("%v want %v", got, want) }
+}
+
 func TestNormalizeURL(t *testing.T) {
     if got := NormalizeURL("//cdn.x/a.jpg", "https://x.com/p"); got != "https://cdn.x/a.jpg" { t.Fatal(got) }
     if got := NormalizeURL("/a.jpg", "https://x.com/p/q"); got != "https://x.com/a.jpg" { t.Fatal(got) }
@@ -473,7 +482,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-`Detect` 规则与 Python 版一致；未知域名取最后两段，端口替换为 `_`。`ExtractURLs` 去重保序，剔除尾部 CJK/全角标点/引号括号。`LoadCookie` 读取 `cookies/<site>.txt`，缺失或空白返回 `ErrNoCookie`。
+`Detect` 用 host 精确匹配或 `.` 后缀匹配（修正 Python 版的子串误匹配：`netflix.com` 不得命中 `x.com`，`next.com` 不得命中 `t.co`）；未知域名取最后两段，端口替换为 `_`。`ExtractURLs` 的分隔类必须覆盖 Python 的 Unicode `\s`（RE2 的 `\s` 只有 ASCII，需加 `\p{Z}`、`\x{0085}`、`\v`），去重保序，剔除尾部 CJK/全角标点/引号括号（不含 `[`）。`LoadCookie` 读取 `cookies/<site>.txt`，缺失或空白返回 `ErrNoCookie`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -525,6 +534,8 @@ func TestSanitizeFilename(t *testing.T) {
     got := SanitizeFilename("a/b\\c:d*e?f\"g<h>i|j\x00中文", "untitled", 80)
     if got != "abcdefghij中文" { t.Fatalf("%q", got) }
     if SanitizeFilename("   ", "untitled", 80) != "untitled" { t.Fatal("blank") }
+    if SanitizeFilename("..", "untitled", 80) != "untitled" { t.Fatal("dot-dot") }
+    if SanitizeFilename(".", "untitled", 80) != "untitled" { t.Fatal("dot") }
 }
 
 func TestBuildDownloadDir(t *testing.T) {
@@ -546,6 +557,9 @@ func TestUniquePathAndExistingByStem(t *testing.T) {
     if _, ok := ExistingByStem(filepath.Join(dir, "001.png")); !ok { t.Fatal("stem match") }
     os.WriteFile(filepath.Join(dir, "002.part"), nil, 0o600)
     if _, ok := ExistingByStem(filepath.Join(dir, "002.jpg")); ok { t.Fatal(".part counted") }
+    os.WriteFile(filepath.Join(dir, "[合集].jpg"), []byte("x"), 0o600)
+    if _, ok := ExistingByStem(filepath.Join(dir, "[合集].png")); !ok { t.Fatal("bracket stem") }
+    if _, ok := ExistingByStem(filepath.Join(dir, "[unmatched.png")); ok { t.Fatal("bad pattern should not match") }
 }
 ```
 
@@ -588,7 +602,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-先 `go get golang.org/x/image`。`ExistingByStem` 用 `filepath.Glob(stem+".*")`，忽略 `.part`/`.ytdl`。`DecodeDimensions` 注册 `image/jpeg`、`image/png`、`image/gif` 与 `golang.org/x/image/webp`，用 `image.DecodeConfig`。`IsDecorativeName` 用词边界正则，避免 `iconic` 命中 `icon`。
+先 `go get golang.org/x/image`。`ExistingByStem` 用 `os.ReadDir(filepath.Dir(stem))` + `strings.TrimSuffix(name, filepath.Ext(name))` 与 `filepath.Base(stem)` 比较，忽略 `.part`/`.ytdl`/目录；不要用 `filepath.Glob`（`[`/`]` 会被当成字符类）。`SanitizeFilename` 清理后若结果为 `.` 或 `..`，返回 `defaultName`。`DecodeDimensions` 注册 `image/jpeg`、`image/png`、`image/gif` 与 `golang.org/x/image/webp`，用 `image.DecodeConfig`。`IsDecorativeName` 用词边界正则，避免 `iconic` 命中 `icon`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -626,6 +640,7 @@ git commit -m "feat: add filesystem and media helpers"
 package cookies
 
 import (
+    "os"
     "strings"
     "testing"
 )
@@ -648,6 +663,32 @@ func TestCheckDouyinGate(t *testing.T) {
     if len(Check("ttwid=x; UIFID=y", "douyin")) != 0 { t.Fatalf("complete cookie reported: %+v", Check("ttwid=x; UIFID=y", "douyin")) }
     if len(Check("ttwid=x", "douyin")) != 1 { t.Fatalf("missing UIFID not reported") }
     if len(Check("UIFID=y", "douyin")) != 1 { t.Fatalf("missing ttwid/sessionid not reported") }
+    if len(Check("UIFID=; ttwid=", "douyin")) == 0 { t.Fatal("empty values must count as gaps") }
+    if len(Check("a1=short; webId=x", "xiaohongshu")) == 0 { t.Fatal("short a1 must be reported") }
+}
+
+func TestJSONArrays(t *testing.T) {
+    for _, raw := range []string{
+        `[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]`,
+        `{"cookies":[{"name":"a1","value":"abc","domain":".xiaohongshu.com"}]}`,
+    } {
+        m, f, err := ParseMap(raw)
+        if err != nil || f != JSONCookies || m["a1"] != "abc" { t.Fatalf("%s: %v %v %v", raw, m, f, err) }
+    }
+}
+
+func TestImportPerSiteFormat(t *testing.T) {
+    dir := t.TempDir()
+    p, err := Import(dir, "bilibili", strings.NewReader("Cookie: SESSDATA=abc"))
+    if err != nil { t.Fatal(err) }
+    data, _ := os.ReadFile(p)
+    if !strings.HasPrefix(string(data), "# Netscape HTTP Cookie File") { t.Fatalf("%s", data) }
+
+    p, err = Import(dir, "xiaohongshu", strings.NewReader(
+        `[{"name":"a1","value":"abc","domain":".xiaohongshu.com"},{"name":"third","value":"x","domain":".evil.com"}]`))
+    if err != nil { t.Fatal(err) }
+    data, _ = os.ReadFile(p)
+    if !strings.Contains(string(data), "a1=abc") || strings.Contains(string(data), "third=") { t.Fatalf("%s", data) }
 }
 ```
 
@@ -658,7 +699,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-`Detect` 先尝试 `encoding/json` 对象，再按 Tab ≥7 字段判 Netscape，否则 Header。`ParseMap` 返回键值（Netscape 取第 6/7 字段）。`Check` 只检查键名，不打印值；抖音缺 `UIFID`/`UIFID_TEMP` 或 `ttwid`/`sessionid` 都算缺口；小红书检查 `a1` 与 `webId`/`web_session`。
+`Detect` 先尝试 JSON：顶层对象、`{"cookies":[...]}` 或顶层数组都算 `JSONCookies`（Cookie-Editor 默认导出是数组）；再按 Tab ≥7 字段判 Netscape，否则 Header。`ParseMap` 返回键值（Netscape 取第 6/7 字段；JSON 数组取每个元素的 name/value，空值保留为空串）。`Check` 只检查键名（不打印值），但空值视为缺失：抖音 `UIFID`/`UIFID_TEMP` 与 `ttwid`/`sessionid` 都需非空；小红书 `a1` 非空且长度 ≥30，`webId`/`web_session` 至少一个非空。`Import` 按站点输出所需格式：`douyin`/`bilibili`/`youtube`/`instagram`/`twitter` 写 Netscape（域分别为 `.douyin.com`/`.bilibili.com`/`.youtube.com`/`.instagram.com`/`.x.com`），`xiaohongshu` 写请求头并只保留 `domain` 含 `xiaohongshu.com` 的 JSON 条目；未知站点保留 Header。写入 0600，先 `MkdirAll`，不打印任何值。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -681,7 +722,7 @@ git commit -m "feat: add cookie parsing, import and checks"
 
 **Interfaces:**
 - Produces: `type Profile struct { Name string; Hello utls.ClientHelloID; UserAgent string }`
-- Produces: `var Chrome155, Chrome120 Profile`
+- Produces: `var Chrome133, Chrome120 Profile`（`Chrome133` 用 `utls.HelloChrome_133` + UA Chrome/133；utls v1.8.2 没有 155 预设）
 - Produces: `type Timeouts struct { Dial, TLS, Header, Idle time.Duration }`、`func DefaultTimeouts() Timeouts`
 - Produces: `type Options struct { Profile Profile; Timeouts Timeouts; Proxy string; InsecureSkipVerify bool }`
 - Produces: `type Request struct { URL string; Header http.Header; Cookie string }`
@@ -715,7 +756,7 @@ func TestGetOverHTTP2WithUTLS(t *testing.T) {
     srv.StartTLS()
     defer srv.Close()
 
-    c := New(Options{Profile: Chrome155, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    c := New(Options{Profile: Chrome133, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
     h := http.Header{}
     h.Set("X-Test", "1")
     resp, err := c.Get(context.Background(), Request{URL: srv.URL, Header: h})
@@ -747,6 +788,53 @@ func TestGetFollowsRedirectAndKeepsCookies(t *testing.T) {
     u, _ := url.Parse(srv.URL + "/b")
     if resp.URL.Path != u.Path { t.Fatalf("final=%s", resp.URL) }
 }
+
+func TestProfilesAlignUAWithHello(t *testing.T) {
+    for _, p := range []Profile{Chrome133, Chrome120} {
+        if !strings.Contains(p.UserAgent, "/"+p.Hello.Version+".") {
+            t.Fatalf("%s: UA %q does not match Hello %s", p.Name, p.UserAgent, p.Hello.Version)
+        }
+    }
+}
+
+func TestCrossSchemeRedirects(t *testing.T) {
+    tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("tls"))
+    }))
+    defer tlsSrv.Close()
+    plainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.URL.Path == "/to-https" { http.Redirect(w, r, tlsSrv.URL, http.StatusFound); return }
+        w.Write([]byte("plain"))
+    }))
+    defer plainSrv.Close()
+    tlsToPlain := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, plainSrv.URL, http.StatusFound)
+    }))
+    defer tlsToPlain.Close()
+
+    c := New(Options{Profile: Chrome120, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    for _, raw := range []string{plainSrv.URL + "/to-https", tlsToPlain.URL} {
+        resp, err := c.Get(context.Background(), Request{URL: raw})
+        if err != nil { t.Fatalf("%s: %v", raw, err) }
+        resp.Close()
+        if resp.StatusCode != 200 { t.Fatalf("%s: status=%d", raw, resp.StatusCode) }
+    }
+}
+
+func TestFallsBackToHTTP1WhenALPNIsNotH2(t *testing.T) {
+    srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.ProtoMajor != 1 { t.Errorf("proto=%s", r.Proto) }
+        w.Write([]byte("h1"))
+    }))
+    srv.EnableHTTP2 = false
+    srv.StartTLS()
+    defer srv.Close()
+    c := New(Options{Profile: Chrome120, Timeouts: DefaultTimeouts(), InsecureSkipVerify: true})
+    resp, err := c.Get(context.Background(), Request{URL: srv.URL})
+    if err != nil { t.Fatal(err) }
+    resp.Close()
+    if resp.StatusCode != 200 { t.Fatalf("status=%d", resp.StatusCode) }
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -769,7 +857,13 @@ dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 }
 ```
 
-用 `http2.Transport{DialTLSContext: ...}`，设置 `ReadIdleTimeout`/`PingTimeout`；`http.Client` 带 `cookiejar.New(nil)`，重定向上限 10。若 `profile.Name == "chrome120"` 且站点要求 HTTP/1.1，可切换到 `http.Transport{DialTLSContext: ...}`（由 `Options.ForceHTTP1` 控制，默认 false）。
+用 `http2.Transport{DialTLSContext: ...}`，设置 `ReadIdleTimeout`/`PingTimeout`；`http.Client` 带 `cookiejar.New(nil)`，重定向上限 10。实现要点：
+
+- 只构建一个 `http.Client`，其 `Transport` 是自定义 `RoundTripper`：按 `req.URL.Scheme` 逐跳选择 `http` → 标准 transport、`https` → utls transport。这样跨协议重定向（http→https、https→http）不会丢指纹或把 h2 帧发给 h1 服务端。
+- utls 握手后检查 `ConnectionState().NegotiatedProtocol == "h2"`；不是 h2 时用 HTTP/1.1 transport（utls + `NextProtos: ["http/1.1"]`）重试一次（仅 GET/HEAD 无 body 的请求需要支持）。
+- `Timeouts.Header` 在 `Get` 里用 `context.WithCancel` + `time.AfterFunc` 实现；成功拿到响应头后停止定时器，并在响应 body `Close` 时 `cancel`，避免泄漏。
+- `Options.Proxy` 只保证 HTTP/1.1 + 标准库 TLS（Go 的 `DialTLSContext` 对代理 HTTPS 不生效）；在 `Options.Proxy` 的文档注释里明确写出这个限制，不要声称代理路径仍使用 utls。
+- `ForceHTTP1` 可保留，但默认走 h2 + 自动回退。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -864,7 +958,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-`DownloadFile` 流程：`!Force` 时先 `fsutil.ExistingByStem` 命中则直接返回；请求成功后按 `Content-Type`/URL 修正扩展名；`Force` 写 `path+".part"` 后 `os.Rename`，否则 `fsutil.UniquePath`；失败删除部分文件。`Filter` 在写盘前调用（用于 HTML 拦截）。重试仅对 `IsTransient`/`IsTransientStatus(429,5xx)`；默认 3 次，退避 `min(maxDelay, minDelay*2^attempt)` 加抖动。
+`DownloadFile` 流程：`!Force` 时先 `fsutil.ExistingByStem` 命中则直接返回；请求成功后按 `Content-Type`/URL 修正扩展名；`Force` 写 `path+".part"` 后 `os.Rename`，否则 `fsutil.UniquePath`；失败删除部分文件。`Filter` 在写盘前调用（用于 HTML 拦截）。重试仅对 `IsTransient(err)`/`IsTransientStatus(429,5xx)`；HTTP 状态错误只走 `IsTransientStatus`，不要再对包含 URL 的错误文本做 `IsTransient`（URL 里的 `503`/`eof` 会误判）。`IsTransient` 必须同时覆盖 Go 原生错误：`no such host`、`server misbehaving`、`connection was reset`、`http2: server sent goaway`、`http2: client connection lost`，并优先用 `errors.As` 识别 `*net.DNSError`（Temporary）、`syscall.ECONNRESET`/`ECONNREFUSED`、`io.ErrUnexpectedEOF`。默认 3 次，退避 `min(maxDelay, minDelay*2^attempt)` 加抖动。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -950,7 +1044,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-探测参数：`-J --skip-download --no-warnings`；有非空 Cookie 文件时加 `--cookies <path>`。下载参数：`--no-warnings --newline -o <outtmpl> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath`；`force` 加 `--force-overwrites`。outtmpl 为 `download/<site>[/<author>]/%(title).200B.%(ext)s`。stdout 按行取最后一条存在的文件路径；无输出则 `failed`。错误信息含 `Fresh cookies` 时提示签名拦截，含 `Sign in`/`login` 时提示 Cookie。
+探测参数：`-J --skip-download --no-warnings`；有非空 Cookie 文件时加 `--cookies <path>`。下载参数：`--no-warnings --newline -o <outtmpl> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath`；`force` 加 `--force-overwrites`。outtmpl 为 `download/<site>[/<author>]/%(title).200B.%(ext)s`。stdout 收集每一条指向存在文件的路径，全部放进同一个 `Post.Files`（播放列表不拆 Post）；一条都没有则 `failed`。错误信息含 `Fresh cookies` 时提示签名拦截，含 `Sign in`/`login` 时提示 Cookie。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -1015,8 +1109,22 @@ func TestExtractAuthor(t *testing.T) {
 
 ```go
 func TestDownloadFiltersDecorativeAndWritesNumbered(t *testing.T) {
-    // httptest 提供 /page.html、/a.jpg（10x10 PNG）、/logo.png（10x10 PNG）
-    // 断言只写入 001.png，且目录名包含标题；logo 被文件名过滤。
+    // httptest 提供 /page.html、/a.png（400x400）、/logo.png（10x10）
+    // 断言只写入 001.png，且完整路径是 <DataDir>/download/<site>/<标题>/001.png；
+    // logo 被文件名过滤且不占用序号。
+}
+
+func TestSkipMarkerOnlySkipsSameURL(t *testing.T) {
+    // 预置 .001.skip 内容为旧 URL；页面第一个候选是新 URL。
+    // 断言重新下载并覆盖 marker，而不是 skipped。
+}
+
+func TestDecorativeNameInMiddleKeepsContiguousNumbers(t *testing.T) {
+    // 候选顺序 [logo.png, a.png, b.png]；断言输出 001.png、002.png，无 003/空洞。
+}
+
+func TestTitleStripsAuthorTail(t *testing.T) {
+    // 页面标题 "正文 来自 作者甲 - 示例站"；目录名不得包含 "正文 来自 作者甲"。
 }
 ```
 
@@ -1029,7 +1137,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-先 `go get github.com/PuerkitoBio/goquery`。扫描 `img/source/video` 的 `src`/`data-src`/`data-original`/`ess-data`/`srcset`（取第一个 URL）、`a[href]` 的媒体后缀、行内 `background-image`。去重保序；`data:` 丢弃。下载前 `media.IsDecorativeName` 过滤；落盘后 `media.IsDecorativeFile`（短边 <300px 或 <20KB）删除并写 `.skip`。总并发 5，同 host 用 `sync.Map` + 带缓冲 channel 限 2。标题取 `<title>` 并清理站点后缀；作者按 `正文 来自 X - 站点` 提取。目录用 `fsutil.BuildDownloadDir`。
+先 `go get github.com/PuerkitoBio/goquery`。扫描 `img/source/video` 的 `src`/`data-src`/`data-original`/`ess-data`/`srcset`（取第一个 URL）、`a[href]` 的媒体后缀、行内 `background-image`。去重保序；`data:` 丢弃。**先按 `media.IsDecorativeName` 预过滤候选，再对剩余候选取连续序号**（不能先编号再过滤）；落盘后 `media.IsDecorativeFile`（短边 <300px 或 <20KB）删除并写 `.<NNN>.skip`。`.skip` 预检查必须读取 marker 内容：只有内容等于当前候选 URL 才跳过；不等则删除 marker 并重新下载。总并发 5，同 host 用 `sync.Map` + 带缓冲 channel 限 2。标题取 `<title>`，剥离末尾 `- <站点>` 以及匹配到的 `正文 来自 <作者> - ` 前缀/尾段；作者按 `正文 来自 X - 站点` 提取（`site` 参数保留但不做严格校验，兼容现有测试）。目录根必须是 `filepath.Join(d.DataDir, "download")`，再传 `fsutil.BuildDownloadDir`。**不要在图片请求里硬编码 UA**：`httpclient.Client` 的 profile UA 已经与指纹对齐，后端覆盖会导致版本错配。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -1112,7 +1220,9 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-`Dispatch` 顺序：`sites.Detect` → xiaohongshu（读 Cookie，缺失 `failed`；用 `cookies.ToHeader` 转成请求头）→ douyin（短链展开后判 note/video，读 Cookie 并转请求头）→ `bilibili/youtube/instagram/twitter` 走 YTDLP → 其他 Generic。`ResolveShortLink` 只对 `urlutil.IsShortLink` 发 GET，取 `resp.URL.String()`；失败原样返回。`runWith` 读取行，`q` 退出，`extractURLs` 后逐条 dispatch；`-f` 传 force。
+`Dispatch` 顺序：`sites.Detect` → xiaohongshu（读 Cookie，缺失 `failed`；用 `cookies.ToHeader` 转成请求头；nil handler 先于 Cookie 检查返回“后端尚未接入”）→ douyin（短链展开后判 note/video，读 Cookie 并转请求头；`/user/` 等非作品链接把**已展开的 resolved URL** 交给 YTDLP）→ `bilibili/youtube/instagram/twitter` **先 `ResolveShortLinkWithRetry` 展开短链**再走 YTDLP → 其他 Generic。`ResolveShortLink` 只对 `urlutil.IsShortLink` 发 GET，取 `resp.URL.String()`；失败原样返回。`runWith` 读取行，`q` 退出，`extractURLs` 后逐条 dispatch；`-f` 传 force。
+
+Task 11 把 `dispatch` 字段加进 `dependencies`，并在 `main.go` 里只接 YTDLP/Generic；`Handlers.XHS`/`DouyinNote`/`DouyinVideo` 保持 nil，`Dispatch` 遇到 nil 返回 `failed`（“后端尚未接入”），等 Task 15/16 再接。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -1308,7 +1418,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-逐段移植 `core/douyin_sign/douyin_abogus.py`：常量表、`digest_of`、`user_agent_digest`、`jsBytes`、`leBytes`、`maskPair`、`expandNoise`、RC4、base64（alphabet `s4`）、字段表与校验位、`GetValue`。`NewABogus` 使用 `math/rand/v2` 的 `rand.Float64` 作为默认 `RNG`；测试注入 `fixedRNG`。`ContentType` 含 `multipart/form-data` 时 body 置空。文件头保留 Apache-2.0 声明。
+逐段移植 `core/douyin_sign/douyin_abogus.py`：常量表、`digest_of`、`user_agent_digest`、`jsBytes`、`leBytes`、`maskPair`、`expandNoise`、RC4、base64（alphabet `s4`）、字段表与校验位、`GetValue`。`NewABogus` 使用 `math/rand/v2` 的 `rand.Float64` 作为默认 `RNG`；测试注入 `fixedRNG`。`ContentType` 含 `multipart/form-data` 时 body 置空。**`SignOptions.NowMS` 必须由调用方传入当前 epoch 毫秒；0 或早于 fortnight epoch 的值一律返回错误（与 Python 一致），不自动取当前时间**——Task 15 用注入的 `Now` 提供。文件头保留 Apache-2.0 声明。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -1379,8 +1489,23 @@ func TestDownloadNoteWritesNumberedImages(t *testing.T) {
     // 断言 download/douyin/<author>/<title>_<id>/001.png 存在，Result.Posts[0].Files 长度 1。
 }
 
-func TestDownloadNoteJSVMFails(t *testing.T) {
-    // httptest 返回 "_$jsvmprt"；断言 Status==failed 且 Message 含 "Cookie"。
+func TestDownloadNoteJSVMFallsBackToDetailAPI(t *testing.T) {
+    // httptest 页面返回 "_$jsvmprt"；把 detailAPIBase 指向返回有效 aweme 的 server；
+    // 断言笔记仍成功下载（Post.Files 非空）。
+}
+
+func TestDownloadNoteJSVMFailsWhenDetailAlsoFails(t *testing.T) {
+    // httptest 页面返回 "_$jsvmprt"；detailAPIBase 返回 403/空响应；
+    // 断言 Status==failed 且 Message 含 "Cookie"。
+}
+
+func TestDetailAPIRetriesEmptyResponse(t *testing.T) {
+    // detail API 第一次 200 空 body，第二次有效 JSON；Sleep 注入 no-op；
+    // 断言成功且只产生一个 Post。
+}
+
+func TestPageRetriesTransient(t *testing.T) {
+    // 页面第一次 503，第二次正常 pace_f；断言成功。
 }
 ```
 
@@ -1393,8 +1518,9 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-- 笔记：GET 页面，`DetectChallenge` 非空直接 `failed`；`ParsePaceF` 失败再尝试 `RENDER_DATA`/`_ROUTER_DATA`；仍失败则调签名 detail API 兜底。
-- 视频：拼 detail API 参数，`douyinsign.NewABogus(ua).GetValue(query, ...)` + `websign.Sign(...)`；Cookie 解析出 `UIFID`，缺失返回 `failed` 并提示；HTTP 403 / 200 空响应分别给出对应文案。
+- 笔记：GET 页面（最多 3 次，瞬时错误退避）；`DetectChallenge` 非空时**先调签名 detail API 兜底**，成功则继续下载，失败才返回对应的 jsvm/验证码 Cookie 提示；`ParsePaceF` 失败再尝试 `RENDER_DATA`/`_ROUTER_DATA`；仍失败则调签名 detail API 兜底。
+- 视频：拼 detail API 参数，`douyinsign.NewABogus(ua).GetValue(query, ...)` + `websign.Sign(...)`；Cookie 解析出 `UIFID`，缺失返回 `failed` 并提示；HTTP 403 / 200 空响应分别给出对应文案。detail API 最多 3 次；2xx 空响应、非 JSON、瞬时网络错误都重试，最终仍失败才报 Cookie 失效。
+- 为测试注入 `Sleep func(time.Duration)`（默认 `time.Sleep`）；退避 200ms/400ms（detail）与 300ms/600ms（页面），测试里替换为 no-op。
 - 媒体下载用 `httpclient.DownloadFile`，Referer 用原页面；图片按 `001.ext`，实况视频同序号；笔记级视频 `video.mp4`。
 - 输出目录 `fsutil.BuildDownloadDir(dataDir, "douyin", title, author)`，标题加 `_<awemeId>`。
 
@@ -1469,7 +1595,16 @@ func TestDownloadWritesNumberedImages(t *testing.T) {
 }
 
 func TestExpiredShortLinkMessage(t *testing.T) {
-    // 页面 200、最终 URL 为首页、noteDetailMap 为空；断言 failed 且 Message 含 "失效"。
+    // xhslink.com 短链 302 到首页；页面 200、noteDetailMap 为空；
+    // 断言 failed 且 Message 含 "失效"（不能报 "xsec_token"）。
+}
+
+func TestShortLinkResolvesToNote(t *testing.T) {
+    // xhslink.com 短链 302 到带 xsec_token 的笔记页；断言下载成功。
+}
+
+func TestDirectBareExploreNeedsToken(t *testing.T) {
+    // 直链 xiaohongshu.com/explore/<id> 无 xsec_token；断言 failed 且 Message 含 "xsec_token"。
 }
 ```
 
@@ -1480,8 +1615,8 @@ Expected: FAIL。
 
 - [ ] **Step 4: 实现**
 
-- 先 `HasXsecToken`，缺失直接 `failed` 并提示“链接必须带 xsec_token”。
-- GET 页面（带 Cookie、Referer、UA），`IsHomepageLanding` 命中则提示“分享链接已失效”。
+- token 门禁只对**直链**（`xiaohongshu.com`/`rednote.com`）生效：`HasXsecToken` 缺失时直接 `failed` 并提示“链接必须带 xsec_token”。`xhslink.com`/`xhslink.cn` 短链不在本地预检，必须先 GET 跟随 302（短链的 token 在跳转目标里）。
+- GET 页面（带 Cookie、Referer、UA）；短链落到首页且 `noteDetailMap` 为空时提示“分享链接已失效”；短链跳到笔记页但最终 URL 仍无 `xsec_token` 时提示 token。
 - 提取 `window.__INITIAL_STATE__`，`NormalizeUndefined` 后 `encoding/json` 解析；`noteDetailMap` 取第一个 note。
 - 图片/实况/视频选最高档；`001.ext` 编号；视频 `video.mp4`；输出目录 `download/xiaohongshu[/<author>]/<title>_<noteId>`。
 - 并发 5，瞬时错误重试 3 次。
@@ -1526,6 +1661,7 @@ package tgapi
 
 import (
     "context"
+    "net"
     "net/http"
     "net/http/httptest"
     "net/url"
@@ -1547,9 +1683,11 @@ func TestCallUnwrapsResultAndErrors(t *testing.T) {
     msg, err := c.SendMessage(context.Background(), "42", "hi")
     if err != nil || msg.MessageID != 9 { t.Fatalf("%+v %v", msg, err) }
 
-    srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte(`{"ok":false,"description":"bad token"}`))
-    })
+    }))
+    defer errSrv.Close()
+    c.BaseURL = errSrv.URL
     if _, err := c.SendMessage(context.Background(), "42", "hi"); err == nil || !strings.Contains(err.Error(), "bad token") {
         t.Fatalf("err=%v", err)
     }
@@ -1573,6 +1711,20 @@ func TestCallMultipartUploadsFile(t *testing.T) {
     _, err := c.CallMultipart(context.Background(), "sendPhoto", map[string]string{"chat_id": "1"}, map[string]string{"photo": p})
     if err != nil { t.Fatal(err) }
 }
+
+func TestTransportErrorRedactsToken(t *testing.T) {
+    ln, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    addr := ln.Addr().String()
+    ln.Close()
+    c := New("SECRET_TOKEN")
+    c.BaseURL = "http://" + addr
+    if _, err := c.SendMessage(context.Background(), "1", "x"); err == nil {
+        t.Fatal("expected transport error")
+    } else if strings.Contains(err.Error(), "SECRET_TOKEN") {
+        t.Fatalf("token leaked: %v", err)
+    }
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1582,7 +1734,7 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现**
 
-统一响应结构 `{"ok":bool,"result":...,"description":...}`；`Call` 用 `url.Values` 表单；`CallMultipart` 用 `mime/multipart`，文件字段按 `files` map 顺序写入（map 顺序无所谓，但测试只读一个文件）。`SendMediaGroup` 构造 `media` JSON，文件用 `attach://file0` 形式并在 multipart 中附带。默认 `BaseURL = "https://api.telegram.org"`。
+统一响应结构 `{"ok":bool,"result":...,"description":...}`；`Call` 用 `url.Values` 表单；`CallMultipart` 用 `mime/multipart`，文件字段按 `files` map 排序写入。**multipart 不能整包缓存在内存**：写到 `os.CreateTemp` 临时文件，`Seek(0)` 后作为请求体并显式设置 `ContentLength`（Termux 上 50MB 视频/相册会 OOM）；结束后删除临时文件。`SendMediaGroup` 构造 `media` JSON，文件用 `attach://file0` 形式并在 multipart 中附带。默认 `BaseURL = "https://api.telegram.org"`。**所有返回给调用方的传输错误必须把 bot token 替换为 `<redacted>`**（`url.Error` 的 URL 含 token），响应体读取加 `io.LimitReader`，错误 body tail 截断到合法 UTF-8 边界。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -1651,6 +1803,16 @@ func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
     if err != nil || asDoc || !strings.HasSuffix(got, ".jpg") { t.Fatalf("%s %v %v", got, asDoc, err) }
     if len(calls) != 1 || !strings.Contains(strings.Join(calls[0], " "), "-frames:v") { t.Fatalf("%v", calls) }
 }
+
+func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
+    // httptest API 记录请求路径；Post 只有一个 jpg；
+    // 断言调用的是 sendPhoto，而不是 sendMediaGroup。
+}
+
+func TestSendSkipsOversizedDocument(t *testing.T) {
+    // 创建一个 >50MB 的 .bin（os.Truncate 稀疏文件）；Post 只含该文件；
+    // 断言返回 skipped 含该路径，且 API 没有收到 sendDocument。
+}
 ```
 
 - [ ] **Step 3: 运行测试确认失败**
@@ -1661,9 +1823,9 @@ Expected: FAIL。
 - [ ] **Step 4: 实现**
 
 - `PlanGroups` 只把 `Photo`/`Video` 编入相册，按输入顺序、每组 ≤10；`Document` 单独发送。
-- `PreparePhoto`：HEIC 或 >10MB 或尺寸和 >10000 时用 ffmpeg 转/压 JPEG；ffmpeg 不存在或失败 → `asDocument=true`。
+- `PreparePhoto`：HEIC 或 >10MB 或尺寸和 >10000 时用 ffmpeg 转/压 JPEG；ffmpeg 不存在或失败 → `asDocument=true`。**HEIC 转出的 JPEG 也要重新检查尺寸和**：>10000 时继续走缩放阶梯，不能只看体积。
 - `CompressVideo`：`ffprobe` 取时长，计算 `视频码率 = (49MB*8/duration) - 96kbps`，下限 200kbps；`ffmpeg -y -i in -c:v libx264 -b:v <rate> -c:a aac -b:a 96k out.mp4`；没有 ffmpeg/ffprobe 返回错误。
-- `Send`：逐个 Post 分组；>50MB 视频尝试压缩，仍超限则加入 `skipped`；照片超限且转码失败按 document；caption 只放第一项。
+- `Send`：逐个 Post 分组；>50MB 视频尝试压缩，仍超限则加入 `skipped`；照片超限且转码失败按 document；**任何将按 document 发送的文件（含转码失败的照片）如果 >50MB，直接加入 `skipped`，不要调用 API**；caption 只放第一项。**单个 Photo/Video 不能用 `SendMediaGroup`（Bot API 要求 2–10 项）**：走 `sendPhoto`/`sendVideo`（`CallMultipart`），带 caption。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -1722,6 +1884,14 @@ func TestHandleMessageSkippedAndFailed(t *testing.T) {
 func TestHandleMessageUploadsOnlyNewFiles(t *testing.T) {
     // dispatch 返回 Post.Files 两项；断言上传两次，且没有扫描 download/ 目录
 }
+
+func TestRunHandlesChannelPost(t *testing.T) {
+    // fake getUpdates 返回一条 channel_post；断言被处理（reply 或 dispatch）。
+}
+
+func TestUploadPathSkipsMarkersAndPartials(t *testing.T) {
+    // 目录含 video.mp4、.001.skip、x.part；只上传 video.mp4。
+}
 ```
 
 - [ ] **Step 2: 写 CLI 上传测试**
@@ -1741,12 +1911,12 @@ Expected: FAIL。
 - [ ] **Step 4: 实现**
 
 - `HandleMessage`：`/start`/`/help` 回帮助；非频道校验白名单；`extractURLs`；逐条 `logging.WithRequest` + `Dispatch`；`Failed`/`NoMedia`/`Skipped` 分别回文案；`Posts` 逐个 `Uploader.Send`；完成提示带 PARTIAL 详情；文字提示用 `AfterFunc` 按 TTL 删除。
-- `Run`：启动时 `GetUpdates(offset=0, timeout=0)` 跳过积压，然后长轮询；网络错误 5s 重试；`message` 与 `channel_post` 都处理。
-- `UploadPath`：目录按 `PlanGroups` 发送，单文件直接分类发送。
+- `Run`：启动时 `GetUpdates(offset=0, timeout=0)` 跳过积压（15s 超时），然后长轮询（每次 40s 超时）；网络错误/超时 5s 重试；`message` 与 `channel_post` 都处理。**所有前台 Telegram 调用（sendMessage/sendMediaGroup/上传/删除）都要有 60s 超时**，不能只依赖进程级 context，否则半开连接会让 5s 重试永远不触发。
+- `UploadPath`：目录按 `PlanGroups` 发送，单文件直接分类发送；**目录收集时跳过隐藏文件（`.` 前缀）和 `fsutil.IsPartialDownload` 命中的 `.part`/`.ytdl`**，否则会把手写后端的 `.001.skip` 标记和半截文件当文档上传。
 
 - [ ] **Step 5: 接入主程序**
 
-`cmd/downloader/main.go` 增加 `bot` 与 `upload` 子命令；`bot` 加载配置，未配置时打印指引并返回 1。
+`cmd/downloader/main.go` 增加 `bot` 与 `upload` 子命令；`bot`/`upload` 加载配置，未配置时打印指引并返回 1。**模板占位值也算未配置**：`bot_token` 为空或以 `在此` 开头，或 `chat_id` 为 `""`/`0`，都要打印指引，不能用占位 token 发网络请求。
 
 - [ ] **Step 6: 运行测试确认通过**
 
@@ -1804,6 +1974,15 @@ func TestCookieImportAndCheck(t *testing.T) {
     code = runWith([]string{"--data-dir", dir, "cookie", "check", "xiaohongshu"}, strings.NewReader(""), &out, &out, dependencies{})
     if code != 1 { t.Fatalf("missing should exit 1: %d %s", code, out.String()) }
 }
+
+func TestCookieSiteNormalization(t *testing.T) {
+    // check douyin.txt / DOUYIN / 重复参数 都应命中同一个文件且不失败；
+    // import Douyin 写到 cookies/douyin.txt。
+}
+
+func TestCookieRejectsTraversalSite(t *testing.T) {
+    // import ../evil 与 check ../../etc/foo 必须退出 1，且父目录不产生文件。
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1814,6 +1993,8 @@ Expected: FAIL。
 - [ ] **Step 3: 实现**
 
 `import` 读取全部 stdin，`cookies.Detect` 后按站点写 `cookies/<site>.txt`（Netscape 直接存，Header 也存原文，JSON 转 Header）；输出路径，不输出内容。`check` 遍历 `cookies/*.txt` 或指定站点，打印 `✓/✗` 与缺失键，有缺口返回 1。
+
+**站点名必须先归一化再拼路径**：`strings.TrimSpace` → 去掉末尾 `.txt` → `strings.ToLower`；只接受 `^[a-z0-9][a-z0-9._-]*$`，拒绝空串、包含 `/`/`\`、`..`、绝对路径的输入（退出 1，提示站点名非法）。`import` 和 `check` 共用同一个归一化函数；`check` 对多个参数去重、跳过空参数。这样 `Douyin`/`douyin.txt` 都能命中 `cookies/douyin.txt`，也不会把凭据写到 `cookies/` 之外。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -1833,16 +2014,16 @@ git commit -m "feat: add cookie import and check subcommands"
 
 **Files:**
 - Create: `.github/workflows/ci.yml`、`.github/workflows/release.yml`、`.goreleaser.yaml`
-- Create: `install_termux.sh`
+- Create: `install-dl-go.sh`
 - Modify: `README.md`、`AGENTS.md`、`.gitignore`
 
 **Interfaces:**
 - Produces: push/PR 跑测试与 lint；tag `v*` 产出 Release。
-- Produces: `install_termux.sh` 支持 `--data-dir`、`--migrate-from`、`DOWNLOADER_VERSION`。
+- Produces: `install-dl-go.sh` 支持 `--data-dir`、`--migrate-from`、`DOWNLOADER_VERSION`。
 
 - [ ] **Step 1: 写 CI**
 
-`ci.yml`：`actions/setup-go@v5`（`go-version-file: go.mod`）、`go build ./...`、`go vet ./...`、`golangci/golangci-lint-action`、`go test ./...`。
+`ci.yml`：`actions/setup-go@v5`（`go-version-file: go.mod`）、`go build ./...`、`go vet ./...`、`golangci/golangci-lint-action@v9`（`version: v2.15.0`）、`go test ./...`。v9 action 对应 golangci-lint v2；不要用 `@v6` + `latest`（v6 传的是 v1 参数，会直接失败）。
 
 - [ ] **Step 2: 写 GoReleaser 配置**
 
@@ -1879,7 +2060,7 @@ checksum:
 
 - [ ] **Step 4: 写安装脚本**
 
-`install_termux.sh`：`set -euo pipefail`；识别 `uname -m`（`aarch64` → `linux_arm64`）；从 `https://api.github.com/repos/backtraxe/downloader-go/releases/latest` 取 asset URL；下载 tar.gz 与 `checksums.txt`，`sha256sum -c`；安装到 `$PREFIX/bin/downloader`；检查 `command -v yt-dlp ffmpeg`；处理 `--data-dir`（幂等写 shell rc）与 `--migrate-from`（复制 cookies/config、符号链接 download）。
+`install-dl-go.sh`：`set -euo pipefail`；识别 `uname -m`（`aarch64` → `linux_arm64`）；从 `https://api.github.com/repos/backtraxe/downloader-go/releases/latest` 取 asset URL；下载 tar.gz 与 `checksums.txt`，`sha256sum -c`；安装到 `$PREFIX/bin/downloader`；检查 `command -v yt-dlp ffmpeg`；处理 `--data-dir`（幂等写 shell rc）与 `--migrate-from`（复制 cookies/config、符号链接 download）。
 
 - [ ] **Step 5: 写文档**
 
@@ -1890,7 +2071,7 @@ checksum:
 ```bash
 go test ./...
 go vet ./...
-bash -n install_termux.sh
+bash -n install-dl-go.sh
 goreleaser check   # 若本机安装 goreleaser
 ```
 
@@ -1899,7 +2080,7 @@ Expected: 全部通过。
 - [ ] **Step 7: 提交**
 
 ```bash
-git add .github .goreleaser.yaml install_termux.sh README.md AGENTS.md .gitignore
+git add .github .goreleaser.yaml install-dl-go.sh README.md AGENTS.md .gitignore
 git commit -m "ci: add build, lint and release pipeline"
 ```
 
@@ -1929,7 +2110,7 @@ Expected: `version` 输出正确；通用抓取在 `/tmp/dl-smoke/download/examp
 - [ ] **Step 2: Termux 冒烟**
 
 - 安装 `pkg install yt-dlp ffmpeg`。
-- 用 `install_termux.sh` 安装二进制。
+- 用 `install-dl-go.sh` 安装二进制。
 - 验证：`downloader run` 下载一个通用网页；带 Cookie 下载小红书/抖音各一条；`yt-dlp` 站点一条。
 - 配置 `config.json` 的 `telegram` 段，`downloader bot` 发一条链接，确认相册/视频回传与 caption 标签。
 - 记录每条链路的实际结果到 `docs/smoke-test.md`。

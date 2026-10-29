@@ -146,7 +146,7 @@ URL → sites.Detect → dispatch
 
 ### 5.4 HTTP 客户端
 
-- `utls` 使用固定的 Chrome profile；每个站点定义 `{HelloID, UA}`，保证 UA 与指纹版本一致。受 utls 可用预设限制：xhs/douyin 用 `HelloChrome_155`（UA 同步为 Chrome/155），generic 用 `HelloChrome_120`（UA Chrome/120）；不再追求与 Python 版的 chrome150/chrome110 逐版本一致。
+- `utls` 使用固定的 Chrome profile；每个站点定义 `{HelloID, UA}`，保证 UA 与指纹版本一致。受 utls v1.8.2 可用预设限制：xhs/douyin 用 `HelloChrome_133`（UA 同步为 Chrome/133，这是当前依赖里最新的 Chrome 预设），generic 用 `HelloChrome_120`（UA Chrome/120）；不再追求与 Python 版的 chrome150/chrome110 逐版本一致。
 - **先用真机 spike 验证**：M2 开始前，用一个最小 Go 程序在 Termux 上请求小红书笔记页与抖音笔记页，确认 utls + HTTP/2 能通过风控；抖音视频详情 API 需要签名，留到签名移植后再验证。通过则 v1 只保留 utls；失败则把系统 curl 兜底提升为 v1 必做项（spike 代码不进入正式仓库）。
 - 连接超时 15s、响应头超时 30s、读取空闲超时 30s；媒体下载不设总时长上限。
 - 支持重定向、Cookie jar、gzip；媒体流式写入 `.part` 后 `os.Rename`。
@@ -162,6 +162,11 @@ URL → sites.Detect → dispatch
 - 探测：`yt-dlp -J --skip-download --no-warnings --cookies <file> URL`，取 `uploader`、`title`、`ext`。
 - 下载：`yt-dlp --no-warnings --newline -o <template> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath ...`；`--force` 时加 `--force-overwrites`。
 - 用 `after_move:filepath` 拿最终文件，避免扫描目录。
+- Instagram 图文帖没有视频格式，yt-dlp 默认以 “There is no video in this
+  post” 失败。探测时对 Instagram 加 `--ignore-no-formats-error`，若结果无视频
+  格式但有缩略图，则改用 `--skip-download --write-thumbnail` 从 `thumbnails`
+  落盘原图，并用 `--print before_dl:thumbnails.-1.filepath` 取回路径；图集每个
+  entry 共用标题，文件名追加 `%(id)s` 避免覆盖。
 - Cookie 只传非空 Netscape 文件。
 
 **小红书**
@@ -255,7 +260,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 - 版本注入：`-ldflags "-s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}"`。
 - Release Notes 自动生成；无需额外 secret（使用内置 `GITHUB_TOKEN`）。
 
-### 7.3 `install_termux.sh`
+### 7.3 `install-dl-go.sh`
 
 - 识别 `uname -m`（aarch64/armv7l）。
 - 通过 GitHub Releases API 或固定 latest 下载 URL 获取对应 tarball。
@@ -274,7 +279,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 1. **M1 基础骨架**：`config`/`sites`/`result`/`fsutil`/`httpclient`/`dispatch`；`run` 子命令；yt-dlp 与 generic 后端；离线测试。
 2. **M2 站点解析**：xhs、douyin 图文/视频、签名移植；fixture 与黄金测试。
 3. **M3 Telegram**：上传规划、转码、Bot API 客户端、bot 长轮询、CLI 直发。
-4. **M4 交付**：CI、GoReleaser、`install_termux.sh`、README/AGENTS.md、迁移说明。
+4. **M4 交付**：CI、GoReleaser、`install-dl-go.sh`、README/AGENTS.md、迁移说明。
 
 每个里程碑以“离线测试通过 + 可手动跑通对应入口”为完成标准。
 
