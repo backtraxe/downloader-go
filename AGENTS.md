@@ -71,6 +71,35 @@ bash -n install-dl-go.sh
 单元测试必须离线：使用 `httptest.Server` 与 `testdata/` 中的脱敏 fixture，
 不访问真实站点。
 
+## 发布
+
+发布由推送 `v*` tag 触发 `.github/workflows/release.yml` + GoReleaser 完成；
+版本号通过 ldflags 注入，不需要手工改代码里的常量。
+
+```bash
+# 1. 确认 main 干净且与远端同步（或先把改动合入 main）
+git switch main
+git pull --ff-only
+CGO_ENABLED=0 go test ./...
+CGO_ENABLED=0 go vet ./...
+goreleaser check
+
+# 2. 打附注标签并推送，tag 即发布触发条件
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin v0.1.1
+
+# 3. 确认工作流与 Release 产物
+gh run list --workflow release.yml --limit 3
+gh run watch <run-id> --exit-status
+gh release view v0.1.1 --json tagName,isDraft,isPrerelease,assets
+```
+
+预期产物为 `linux/arm64`、`linux/amd64`、`darwin/arm64`、`darwin/amd64`、
+`windows/amd64` 五个平台包，以及 `checksums.txt`。tag 带预发布后缀（如
+`v0.1.1-rc.1`）时 GoReleaser 会自动标记为 prerelease。
+
+不要删除已发布的 tag 来回滚：产物可能已被缓存。需要修正时发布新的补丁版本。
+
 ## HTTP 客户端
 
 - https 使用 `utls` 模拟 Chrome ClientHello，默认 HTTP/2；ALPN 未协商 h2 时
