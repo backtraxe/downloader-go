@@ -26,6 +26,25 @@ internal/telegram      bot 长轮询、白名单、上传规划、转码
 internal/tgapi         Telegram Bot API multipart 客户端
 ```
 
+## 主链路
+
+```text
+cmd/downloader
+  → dispatch.Dispatcher       按站点路由，并为每个链接开启 [rXXXX] 日志作用域
+      ├─ xhs / douyin         Cookie 必需；抖音短链先展开再分流图文/视频
+      ├─ ytdlp                bilibili / youtube / instagram / twitter
+      └─ generic              其余网页
+  → result.Result{Status, Message, Posts}   所有后端统一返回
+  → telegram.Bot             消费 Posts，规划上传/转码，经 tgapi 回传
+```
+
+- 后端只把本次新写入或覆盖的文件放进 `Post.Files`；`skipped` 不填，
+  `partial` 只填成功项。bot 直接消费 `Posts`，不扫描 `download/` 做前后 diff。
+- 状态优先级：新增 > 失败 > 已存在 > 被过滤；缺 Cookie、请求失败、解析失败
+  必须返回 `failed`。
+- 站点识别集中在 `internal/sites`，路由集中在 `internal/dispatch`；新增站点
+  优先改这两处，不要在入口里加分支。
+
 ## 常用命令
 
 ```bash
@@ -33,6 +52,10 @@ internal/tgapi         Telegram Bot API multipart 客户端
 CGO_ENABLED=0 go build -o dl-go ./cmd/downloader
 CGO_ENABLED=0 go test ./...
 CGO_ENABLED=0 go vet ./...
+
+# 单个包 / 单个测试
+CGO_ENABLED=0 go test ./internal/backend/xhs
+CGO_ENABLED=0 go test ./internal/dispatch -run TestDispatchDouyinNoteAndVideo -v
 
 # 静态检查
 golangci-lint run
@@ -47,6 +70,15 @@ bash -n install-dl-go.sh
 
 单元测试必须离线：使用 `httptest.Server` 与 `testdata/` 中的脱敏 fixture，
 不访问真实站点。
+
+## HTTP 客户端
+
+- https 使用 `utls` 模拟 Chrome ClientHello，默认 HTTP/2；ALPN 未协商 h2 时
+  自动回退 HTTP/1.1。UA 必须与指纹版本一致：xhs、douyin 与短链展开使用
+  `Chrome133`，generic 使用 `Chrome120`。抖音 `a_bogus` 签名覆盖 UA，修改
+  指纹或 UA 时需同步检查 `internal/douyinsign`。
+- 经 `Options.Proxy` 的 HTTPS 走标准库 TLS + HTTP/1.1，不套用 utls 指纹
+  （Go 的 `DialTLSContext` 对代理 CONNECT 隧道不生效）。
 
 ## 关键约束
 

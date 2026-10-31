@@ -84,6 +84,62 @@ func normalizeContentType(contentType string) string {
 	return strings.ToLower(strings.TrimSpace(ct))
 }
 
+// ImageFormat 是文件头识别出的图片容器格式。
+type ImageFormat int
+
+const (
+	// ImageFormatUnknown 表示无法从文件头识别，或读取文件失败。
+	ImageFormatUnknown ImageFormat = iota
+	ImageFormatJPEG
+	ImageFormatPNG
+	ImageFormatGIF
+	ImageFormatWebP
+	ImageFormatHEIC
+	ImageFormatAVIF
+)
+
+// DetectImageFormat 读取文件头识别图片格式。
+//
+// 站点常把 WebP/HEIC 原图保存成 .jpg，按扩展名判断会漏掉需要转码的
+// 文件；上传前应按实际内容判断。文件不可读时返回 Unknown。
+func DetectImageFormat(path string) ImageFormat {
+	f, err := os.Open(path)
+	if err != nil {
+		return ImageFormatUnknown
+	}
+	defer f.Close()
+
+	var head [16]byte
+	n, _ := io.ReadFull(f, head[:])
+	return SniffImageFormat(head[:n])
+}
+
+// SniffImageFormat 按 magic bytes 识别常见图片格式。
+//
+// 只覆盖本项目下载与上传会遇到的容器；其他格式返回 Unknown，由调用方
+// 决定转码或降级。
+func SniffImageFormat(head []byte) ImageFormat {
+	s := string(head)
+	switch {
+	case strings.HasPrefix(s, "\xff\xd8\xff"):
+		return ImageFormatJPEG
+	case strings.HasPrefix(s, "\x89PNG\r\n\x1a\n"):
+		return ImageFormatPNG
+	case strings.HasPrefix(s, "GIF87a"), strings.HasPrefix(s, "GIF89a"):
+		return ImageFormatGIF
+	case len(head) >= 12 && string(head[0:4]) == "RIFF" && string(head[8:12]) == "WEBP":
+		return ImageFormatWebP
+	case len(head) >= 12 && string(head[4:8]) == "ftyp":
+		switch string(head[8:12]) {
+		case "heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1":
+			return ImageFormatHEIC
+		case "avif", "avis":
+			return ImageFormatAVIF
+		}
+	}
+	return ImageFormatUnknown
+}
+
 // DecodeDimensions 从图片数据头部解析宽高，仅供判定装饰图使用。
 //
 // 已注册 JPEG/PNG/GIF 与 WebP；格式不识别、数据损坏或读取失败时

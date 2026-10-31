@@ -98,7 +98,7 @@ dl-go cookie check [sites...]    # 离线检查 Cookie 必需键
 | 命令 | 用途 | 缺失时 |
 | --- | --- | --- |
 | `yt-dlp` | bilibili / YouTube / Instagram / Twitter 等站点 | 返回 `failed` 并提示安装 |
-| `ffmpeg` | HEIC 预览、超大视频压缩 | 降级为 document 或跳过 |
+| `ffmpeg` | HEIC/WebP 转 JPEG、超大图片与视频压缩 | 降级为 document 或跳过 |
 
 ```bash
 pkg install yt-dlp ffmpeg

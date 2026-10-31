@@ -292,9 +292,7 @@ func TestHandleMessageUploadsOnlyNewFiles(t *testing.T) {
 	new2 := filepath.Join(dir, "new2.jpg")
 	old := filepath.Join(dir, "old.jpg")
 	for _, path := range []string{new1, new2, old} {
-		if err := os.WriteFile(path, []byte("jpeg"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeTestJPEG(t, path, 10, 10)
 	}
 
 	rec := &fakeTelegram{}
@@ -330,9 +328,7 @@ func TestHandleMessageUploadsOnlyNewFiles(t *testing.T) {
 func TestHandleMessagePartialAppendsDetail(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a.jpg")
-	if err := os.WriteFile(file, []byte("jpeg"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestJPEG(t, file, 10, 10)
 
 	rec := &fakeTelegram{}
 	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(context.Context, string, bool) result.Result {
@@ -447,9 +443,7 @@ func TestHandleMessageDoesNotScheduleWhenTTLDisabled(t *testing.T) {
 func writeTempJPEG(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "p.jpg")
-	if err := os.WriteFile(path, []byte("jpeg"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestJPEG(t, path, 10, 10)
 	return path
 }
 

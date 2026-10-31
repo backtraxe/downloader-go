@@ -29,10 +29,29 @@ func recordingRunner(t *testing.T, calls *[][]string) Runner {
 
 func joinCall(call []string) string { return strings.Join(call, " ") }
 
+// writeTestJPEG 写出一个可被 image.DecodeConfig 识别的真实 JPEG，
+// 避免测试数据因文件头无法识别而被当成需要转码的图片。
+func writeTestJPEG(t *testing.T, path string, width, height int) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := jpeg.Encode(f, image.NewRGBA(image.Rect(0, 0, width, height)), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// heicMagic 是足以被文件头识别为 HEIC 的最小前缀。
+func heicMagic() []byte {
+	return append([]byte{0x00, 0x00, 0x00, 0x18}, []byte("ftypheic")...)
+}
+
 func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a.heic")
-	if err := os.WriteFile(src, []byte("heic"), 0o600); err != nil {
+	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var calls [][]string
@@ -52,7 +71,7 @@ func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
 func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "wide.heic")
-	if err := os.WriteFile(src, []byte("heic"), 0o600); err != nil {
+	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var calls [][]string
@@ -62,8 +81,8 @@ func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 		WorkDir: t.TempDir(),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
 			calls = append(calls, append([]string{name}, args...))
-			// 首次转换产出宽高和超限但体积很小的 JPEG；缩放阶梯再产出小图。
-			w, h := 10000, 1
+			// 首次转换产出宽高和超限但宽高比正常的 JPEG；缩放阶梯再产出小图。
+			w, h := 10000, 1000
 			if call > 0 {
 				w, h = 100, 100
 			}
@@ -92,15 +111,48 @@ func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 func TestPreparePhotoNormalUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a.jpg")
-	if err := os.WriteFile(src, []byte("jpeg"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestJPEG(t, src, 100, 100)
 	u := &Uploader{WorkDir: t.TempDir(), Run: func(context.Context, string, ...string) ([]byte, []byte, error) {
 		t.Fatal("ffmpeg should not run for a small photo")
 		return nil, nil, nil
 	}}
 	got, asDoc, err := u.PreparePhoto(context.Background(), src)
 	if err != nil || asDoc || got != src {
+		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+}
+
+// TestPreparePhotoConvertsWebPDisguisedAsJPEG 验证按文件头而不是扩展名
+// 判断格式：小红书等站点会把 WebP 原图存成 .jpg，直接进相册会触发
+// IMAGE_PROCESS_FAILED。
+func TestPreparePhotoConvertsWebPDisguisedAsJPEG(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.jpg")
+	webp := append([]byte("RIFF\x00\x00\x00\x00WEBP"), []byte("VP8 ")...)
+	if err := os.WriteFile(src, webp, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	u := &Uploader{FFmpeg: "ffmpeg", WorkDir: t.TempDir(), Run: recordingRunner(t, &calls)}
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || asDoc || got == src {
+		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+	if len(calls) != 1 || !strings.Contains(joinCall(calls[0]), "-frames:v") {
+		t.Fatalf("webp was not converted: %v", calls)
+	}
+}
+
+func TestPreparePhotoExtremeAspectRatioBecomesDocument(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "long.jpg")
+	writeTestJPEG(t, src, 100, 3000)
+	u := &Uploader{WorkDir: t.TempDir(), Run: func(context.Context, string, ...string) ([]byte, []byte, error) {
+		t.Fatal("ffmpeg should not run when the aspect ratio cannot be fixed by scaling")
+		return nil, nil, nil
+	}}
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || !asDoc || got != src {
 		t.Fatalf("%s %v %v", got, asDoc, err)
 	}
 }

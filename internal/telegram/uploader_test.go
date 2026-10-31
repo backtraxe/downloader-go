@@ -82,9 +82,7 @@ func TestSendGroupsAlbumsAndSkipsOversizedVideo(t *testing.T) {
 	var files []string
 	for i := 0; i < 12; i++ {
 		p := filepath.Join(dir, fmt.Sprintf("p%02d.jpg", i))
-		if err := os.WriteFile(p, []byte("jpeg"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeTestJPEG(t, p, 10, 10)
 		files = append(files, p)
 	}
 	big := filepath.Join(dir, "big.mp4")
@@ -163,9 +161,7 @@ func TestSendGroupsAlbumsAndSkipsOversizedVideo(t *testing.T) {
 func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "one.jpg")
-	if err := os.WriteFile(src, []byte("jpeg"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestJPEG(t, src, 10, 10)
 
 	rec := &uploadRecorder{}
 	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
@@ -186,6 +182,75 @@ func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
 	}
 	if len(rec.singles) != 1 || rec.singles[0] != "#甲 #douyin\n标题" {
 		t.Fatalf("singles=%v", rec.singles)
+	}
+}
+
+// TestSendAlbumFallsBackToSinglesAndDocument 验证相册因 IMAGE_PROCESS_FAILED
+// 整组失败时逐项重发，并把仍然失败的照片降级为 document。
+func TestSendAlbumFallsBackToSinglesAndDocument(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.jpg")
+	b := filepath.Join(dir, "b.jpg")
+	writeTestJPEG(t, a, 10, 10)
+	writeTestJPEG(t, b, 10, 10)
+
+	var mu sync.Mutex
+	var paths []string
+	photoCalls := 0
+	fail := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":          false,
+			"error_code":  400,
+			"description": `Bad Request: failed to send message #2 with the error message "IMAGE_PROCESS_FAILED"`,
+		})
+	}
+	ok := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": 7}})
+	}
+	handler := func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		paths = append(paths, req.URL.Path)
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/sendMediaGroup"):
+			fail(w)
+		case strings.HasSuffix(req.URL.Path, "/sendPhoto"):
+			mu.Lock()
+			photoCalls++
+			n := photoCalls
+			mu.Unlock()
+			if n == 2 {
+				fail(w)
+				return
+			}
+			ok(w)
+		case strings.HasSuffix(req.URL.Path, "/sendDocument"):
+			ok(w)
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	u := &Uploader{API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}}
+	sent, skipped, err := u.Send(context.Background(), "123", result.Post{
+		Site: "xiaohongshu", Author: "甲", Title: "标题", Files: []string{a, b},
+	})
+	if err != nil || sent != 2 || len(skipped) != 0 {
+		t.Fatalf("sent=%d skipped=%v err=%v", sent, skipped, err)
+	}
+	want := []string{
+		"/bottest/sendMediaGroup",
+		"/bottest/sendPhoto",
+		"/bottest/sendPhoto",
+		"/bottest/sendDocument",
+	}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("paths=%v want %v", paths, want)
 	}
 }
 

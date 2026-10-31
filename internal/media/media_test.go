@@ -11,6 +11,42 @@ import (
 	"testing"
 )
 
+func TestSniffImageFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		head []byte
+		want ImageFormat
+	}{
+		{"jpeg", []byte{0xff, 0xd8, 0xff, 0xe0}, ImageFormatJPEG},
+		{"png", []byte("\x89PNG\r\n\x1a\n\x00\x00"), ImageFormatPNG},
+		{"gif", []byte("GIF89a"), ImageFormatGIF},
+		{"webp", []byte("RIFF\x00\x00\x00\x00WEBPVP8 "), ImageFormatWebP},
+		{"heic", append([]byte{0, 0, 0, 0x18}, []byte("ftypheic")...), ImageFormatHEIC},
+		{"avif", append([]byte{0, 0, 0, 0x18}, []byte("ftypavif")...), ImageFormatAVIF},
+		{"unknown", []byte("not-an-image"), ImageFormatUnknown},
+		{"short", []byte{0xff}, ImageFormatUnknown},
+	}
+	for _, c := range cases {
+		if got := SniffImageFormat(c.head); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDetectImageFormat(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.bin")
+	if err := os.WriteFile(p, []byte{0xff, 0xd8, 0xff, 0xe0}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DetectImageFormat(p); got != ImageFormatJPEG {
+		t.Fatalf("got %v want JPEG", got)
+	}
+	if got := DetectImageFormat(filepath.Join(dir, "missing")); got != ImageFormatUnknown {
+		t.Fatalf("missing file: got %v want Unknown", got)
+	}
+}
+
 func TestGuessExtension(t *testing.T) {
 	if got := GuessExtension("https://x/a.webp?x=1", "text/html", ".jpg"); got != ".webp" {
 		t.Fatal(got)
