@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/result"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
@@ -98,32 +99,7 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 	}
 
 	for _, group := range PlanGroups(media, albumSize) {
-		if len(group) == 1 {
-			// Bot API 的 sendMediaGroup 要求 2–10 项，单项走专用方法。
-			file := group[0]
-			method, field := "sendPhoto", "photo"
-			if file.Kind == Video {
-				method, field = "sendVideo", "video"
-			}
-			fields := map[string]string{"chat_id": chatID}
-			if caption != "" {
-				fields["caption"] = caption
-			}
-			if _, err := u.API.CallMultipart(ctx, method, fields, map[string]string{field: file.Path}); err != nil {
-				return sent, skipped, err
-			}
-			sent++
-			continue
-		}
-		items := make([]tgapi.Media, 0, len(group))
-		for i, file := range group {
-			item := tgapi.Media{Kind: kindName(file.Kind), Path: file.Path}
-			if i == 0 {
-				item.Caption = caption
-			}
-			items = append(items, item)
-		}
-		if _, err := u.API.SendMediaGroup(ctx, chatID, items); err != nil {
+		if err := u.sendGroup(ctx, chatID, group, caption); err != nil {
 			return sent, skipped, err
 		}
 		sent += len(group)
@@ -141,4 +117,83 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 	}
 
 	return sent, skipped, nil
+}
+
+// sendGroup 发送一个相册分组。
+//
+// 单项由 sendSingle 直接发送。多项走 sendMediaGroup；相册对图片格式的
+// 处理比单张更严格，整组失败且原因是图片处理时，逐项重发，避免一张坏图
+// 中断整批。逐项发送时仍保留首项 caption。
+func (u *Uploader) sendGroup(ctx context.Context, chatID string, group []FileInfo, caption string) error {
+	if len(group) == 1 {
+		return u.sendSingle(ctx, chatID, group[0], caption)
+	}
+
+	items := make([]tgapi.Media, 0, len(group))
+	for i, file := range group {
+		item := tgapi.Media{Kind: kindName(file.Kind), Path: file.Path}
+		if i == 0 {
+			item.Caption = caption
+		}
+		items = append(items, item)
+	}
+	_, err := u.API.SendMediaGroup(ctx, chatID, items)
+	if err == nil {
+		return nil
+	}
+	if !isImageProcessingError(err) {
+		return err
+	}
+	for i, file := range group {
+		itemCaption := ""
+		if i == 0 {
+			itemCaption = caption
+		}
+		if err := u.sendSingle(ctx, chatID, file, itemCaption); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendSingle 按单张照片或视频发送。
+//
+// sendPhoto 遇到图片处理失败时降级为 document，保证单个文件仍能送达；
+// 其他错误（鉴权、网络等）原样返回。
+func (u *Uploader) sendSingle(ctx context.Context, chatID string, file FileInfo, caption string) error {
+	method, field := "sendPhoto", "photo"
+	if file.Kind == Video {
+		method, field = "sendVideo", "video"
+	}
+	fields := map[string]string{"chat_id": chatID}
+	if caption != "" {
+		fields["caption"] = caption
+	}
+	_, err := u.API.CallMultipart(ctx, method, fields, map[string]string{field: file.Path})
+	if err == nil {
+		return nil
+	}
+	if method != "sendPhoto" || !isImageProcessingError(err) {
+		return err
+	}
+
+	docFields := map[string]string{"chat_id": chatID}
+	if caption != "" {
+		docFields["caption"] = caption
+	}
+	_, docErr := u.API.CallMultipart(ctx, "sendDocument", docFields, map[string]string{"document": file.Path})
+	return docErr
+}
+
+// isImageProcessingError 判断 Telegram 是否因图片解码/尺寸问题拒绝请求。
+//
+// 这类错误与文件内容有关，换 document 方式发送通常可以成功；其他 400
+// （如 chat 不存在、caption 超长）不能靠降级解决。
+func isImageProcessingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "image_process_failed") ||
+		strings.Contains(text, "photo_invalid_dimensions")
 }

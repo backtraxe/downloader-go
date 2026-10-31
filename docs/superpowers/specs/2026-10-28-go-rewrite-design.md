@@ -12,7 +12,7 @@
 目标是用 Go 重写业务逻辑，做到：
 
 - 单个静态二进制，Termux 系统升级不影响自身运行；
-- 只保留两个外部命令：`yt-dlp`（负责 bilibili/youtube/instagram/twitter）与 `ffmpeg`（HEIC 预览、>50MB 视频压缩），两者都由 Termux 包管理器维护；
+- 只保留两个外部命令：`yt-dlp`（负责 bilibili/youtube/instagram/twitter）与 `ffmpeg`（HEIC/WebP 预览、大图与 >50MB 视频压缩），两者都由 Termux 包管理器维护；
 - TLS 指纹用纯 Go 的 `utls` 模拟 Chrome，替代 `curl_cffi`；
 - 保持现有 Cookie 文件、`config.json`、`download/` 目录布局兼容，用户可平滑切换；
 - GitHub Actions 自动测试、交叉编译并在打 tag 时发布 Release，Termux 一条命令安装/升级。
@@ -198,8 +198,13 @@ URL → sites.Detect → dispatch
 - bot：长轮询 `getUpdates`，启动时跳过积压；支持 `message` 与 `channel_post`；频道不做用户白名单。
 - 上传规划：
   - 图片（jpg/jpeg/png/webp）与视频（mp4/mov/webm/mkv）混排，每组 ≤10，发 `sendMediaGroup`；
-  - 照片 >10MB 或尺寸和 >10000：ffmpeg 缩放/压到 ≤10MB；失败降级 `sendDocument`；
-  - HEIC：ffmpeg 转 JPEG 预览，失败按文件发送；
+  - 照片 >10MB、尺寸和 >10000 或宽高比 >20：ffmpeg 缩放/压到 ≤10MB；失败
+    降级 `sendDocument`（宽高比超限无法靠等比缩放修复时直接按文件发送）；
+  - 图片格式按文件头识别，不信任扩展名：小红书等站点常把 WebP/HEIC 存成
+    `.jpg`，相册对格式比单张 `sendPhoto` 更严格，WebP/HEIC/AVIF/未知格式
+    先用 ffmpeg 转 JPEG，失败按文件发送；
+  - `sendMediaGroup` 因 `IMAGE_PROCESS_FAILED` 整组失败时逐项重发，仍失败
+    的照片再降级 `sendDocument`，避免一张坏图中断整批；
   - 视频 >50MB：ffmpeg 按码率预算压到 ~49MB，失败则跳过并提示本地路径；
   - 单图/单视频走 `sendPhoto`/`sendVideo`；其他文件走 `sendDocument`。
 - caption：`#作者 #站点` + 标题；相册只在第一项带 caption。

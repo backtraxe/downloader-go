@@ -25,6 +25,8 @@ const (
 	audioBitrate = 96_000
 	// maxPhotoDimSum 是照片宽高像素和的预览上限，超出先等比缩小。
 	maxPhotoDimSum = 10000
+	// maxPhotoAspectRatio 是 Telegram 照片的宽高比上限（长边/短边）。
+	maxPhotoAspectRatio = 20
 	// maxPhotoCompressRounds 是大图逐轮缩放的上限。
 	maxPhotoCompressRounds = 8
 	// photoScaleFactor 是每轮缩放比例。
@@ -37,12 +39,15 @@ var jpegQualities = []string{"2", "4", "6"}
 // Runner 执行外部命令并返回 stdout/stderr。测试注入假实现即可离线运行。
 type Runner func(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error)
 
-// PreparePhoto 在需要时把照片转成 ≤10MB 的 JPEG 预览。
+// PreparePhoto 在需要时把照片转成 Telegram 可接受的 JPEG 预览。
 //
-// HEIC/HEIF、体积 >10MB 或宽高和 >10000 的照片会调用 ffmpeg 转换/压缩，
-// 产物落在 WorkDir。ffmpeg 缺失、执行失败或压缩后仍超标时返回原始路径
-// 且 asDocument=true，由调用方降级为文件发送；这种情况下不返回 error。
-// 普通照片原样返回。
+// 判断依据是文件头而不是扩展名：小红书等站点常把 WebP/HEIC 原图保存成
+// .jpg，按扩展名放行会在 sendMediaGroup 里触发 IMAGE_PROCESS_FAILED。
+// JPEG/PNG 原样发送；WebP、HEIC/HEIF、AVIF、无法识别或无法读取尺寸的
+// 图片，以及体积 >10MB、宽高和 >10000 的图片，交给 ffmpeg 转成 JPEG。
+// 宽高比超过 Telegram 上限 20 时等比缩放无法修复，直接按文件发送。
+// ffmpeg 缺失、执行失败或压缩后仍超标时返回原始路径且 asDocument=true，
+// 由调用方降级为文件发送；这种情况不返回 error。
 //
 // 返回的 prepared 与 path 不同时是临时产物，由调用方负责删除。
 func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared string, asDocument bool, err error) {
@@ -50,26 +55,54 @@ func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared stri
 	if err != nil {
 		return "", false, fmt.Errorf("telegram: stat %s: %w", path, err)
 	}
-	ext := strings.ToLower(filepath.Ext(path))
-	heic := ext == ".heic" || ext == ".heif"
-	oversized := info.Size() > maxPhotoBytes
+
+	format := media.DetectImageFormat(path)
+	unsupported := format != media.ImageFormatJPEG && format != media.ImageFormatPNG
 	width, height, dimsKnown := photoDimensions(path)
-	if !oversized && dimsKnown && width+height > maxPhotoDimSum {
-		oversized = true
+	// JPEG/PNG 也可能损坏或使用 Go 无法解码的变体；读不出尺寸时交给
+	// ffmpeg 验证，避免把坏图直接塞进相册。
+	if !unsupported && !dimsKnown {
+		unsupported = true
 	}
-	if !heic && !oversized {
+
+	oversized := info.Size() > maxPhotoBytes
+	if dimsKnown {
+		if width+height > maxPhotoDimSum || exceedsAspectRatio(width, height) {
+			oversized = true
+		}
+	}
+	if !unsupported && !oversized {
 		return path, false, nil
 	}
-	out, ok := u.compressPhoto(ctx, path, heic, width, height, dimsKnown)
+	// 长图等比缩放后宽高比不变，无法满足 Telegram 限制，按文件发送。
+	if dimsKnown && exceedsAspectRatio(width, height) {
+		return path, true, nil
+	}
+
+	out, ok := u.compressPhoto(ctx, path, unsupported, width, height, dimsKnown)
 	if !ok {
 		return path, true, nil
 	}
 	return out, false, nil
 }
 
-// compressPhoto 执行 HEIC 单帧导出或大图缩放/质量阶梯。
+// exceedsAspectRatio 判断长边/短边是否超过 Telegram 照片上限。
+func exceedsAspectRatio(width, height int) bool {
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	if width < height {
+		width, height = height, width
+	}
+	return width > maxPhotoAspectRatio*height
+}
+
+// compressPhoto 执行格式转换或大图缩放/质量阶梯。
+//
+// convert=true 时先按最高质量导出单帧 JPEG（WebP/HEIC/AVIF/未知格式），
+// 再重新量尺寸；其余情况直接按体积与宽高和做缩放/质量阶梯。
 // 返回 ok=false 表示 ffmpeg 不可用、失败或最终产物仍超限。
-func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, width, height int, dimsKnown bool) (string, bool) {
+func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool, width, height int, dimsKnown bool) (string, bool) {
 	out, err := u.workFile(path, ".jpg")
 	if err != nil {
 		return "", false
@@ -82,14 +115,18 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, heic bool, wi
 	}()
 	base := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", path, "-frames:v", "1"}
 
-	if heic {
-		// Termux 的 libheif 不带 CLI，ffmpeg 原生解 HEIF 单帧即可。
+	if convert {
+		// Termux 的 libheif 不带 CLI，ffmpeg 原生解 HEIF/WebP/AVIF 单帧即可。
 		args := append(append([]string{}, base...), "-q:v", "2", out)
 		if err := u.runFFmpeg(ctx, args); err != nil {
 			return "", false
 		}
-		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限。
+		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限，
+		// 极端长图也可能仍超过 Telegram 的宽高比限制。
 		if convertedW, convertedH, known := photoDimensions(out); known {
+			if exceedsAspectRatio(convertedW, convertedH) {
+				return "", false
+			}
 			width, height, dimsKnown = convertedW, convertedH, true
 		}
 		if sizeAtMost(out, maxPhotoBytes) && (!dimsKnown || width+height <= maxPhotoDimSum) {

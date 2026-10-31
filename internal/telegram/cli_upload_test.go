@@ -14,10 +14,11 @@ import (
 
 func TestUploadPathDirectory(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"001.jpg", "002.jpg", "video.mp4"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	for _, name := range []string{"001.jpg", "002.jpg"} {
+		writeTestJPEG(t, filepath.Join(dir, name), 10, 10)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	rec := &fakeTelegram{}
