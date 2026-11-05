@@ -207,7 +207,10 @@ URL → sites.Detect → dispatch
     的照片再降级 `sendDocument`，避免一张坏图中断整批；
   - 视频 >50MB：ffmpeg 按码率预算压到 ~49MB，失败则跳过并提示本地路径；
   - 单图/单视频走 `sendPhoto`/`sendVideo`；其他文件走 `sendDocument`。
-- caption：`#作者 #站点` + 标题；相册只在第一项带 caption。
+- caption：`#作者 #站点` + 标题；相册只在第一项带 caption。作者名优先取
+  yt-dlp 的 `uploader`，为空时回退 `channel`/`uploader_id`（Instagram 的
+  `uploader` 是可能缺失的显示名）；标签保留 Unicode 字母与数字，避免日文、
+  韩文、西里尔文作者名被过滤后丢失标签。
 - 过程提示消息按 TTL 自动删除；媒体消息永不删除。
 - 串行处理，一条消息内的多个链接顺序执行。
 

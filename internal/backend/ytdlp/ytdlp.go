@@ -56,10 +56,34 @@ func New(dataDir string) *Downloader {
 type probeInfo struct {
 	Title      string            `json:"title"`
 	Uploader   string            `json:"uploader"`
+	UploaderID string            `json:"uploader_id"`
+	Channel    string            `json:"channel"`
 	Ext        string            `json:"ext"`
 	Formats    []json.RawMessage `json:"formats"`
 	Thumbnails []json.RawMessage `json:"thumbnails"`
 	Entries    []probeInfo       `json:"entries"`
+}
+
+// author 返回用于目录与 #作者 标签的作者名。
+//
+// Instagram 的 uploader 是显示名（full_name），可能为空；channel 是稳定的
+// 用户名，作为回退可以避免 caption 丢失作者标签。图集顶层缺失时继续看
+// 第一个带作者的 entry。
+func (p probeInfo) author() string {
+	for _, candidate := range []string{p.Uploader, p.Channel, p.UploaderID} {
+		s := strings.TrimSpace(candidate)
+		// YouTube 的 channel 是频道 URL，不能拿来当作者名。
+		if s == "" || strings.Contains(s, "://") {
+			continue
+		}
+		return s
+	}
+	for _, entry := range p.Entries {
+		if s := entry.author(); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // hasVideoFormats 递归判断探测结果是否含可下载的视频格式。
@@ -130,7 +154,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 	}
 
 	// 作者为空时省略目录层，避免产生 untitled/ 之类占位目录。
-	author := fsutil.SanitizeFilename(info.Uploader, "", 80)
+	author := fsutil.SanitizeFilename(info.author(), "", 80)
 	title := strings.TrimSpace(info.Title)
 	if title == "" {
 		title = "untitled"
@@ -187,7 +211,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 //
 // 图集所有 entry 共用同一个标题，因此文件名追加 %(id)s，避免互相覆盖。
 func (d *Downloader) downloadImages(ctx context.Context, rawURL, site string, info probeInfo, force bool) result.Result {
-	author := fsutil.SanitizeFilename(info.Uploader, "", 80)
+	author := fsutil.SanitizeFilename(info.author(), "", 80)
 	title := strings.TrimSpace(info.Title)
 	if title == "" {
 		title = "untitled"

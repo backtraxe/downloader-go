@@ -24,6 +24,10 @@ func TestMakeTagEdgeCases(t *testing.T) {
 		" a  b ":    "#a_b",
 		"标题 123_x":  "#标题_123_x",
 		"emoji 😀 x": "#emoji_x",
+		"こんにちは":     "#こんにちは",
+		"안녕하세요":     "#안녕하세요",
+		"Иван":      "#Иван",
+		"😀":         "",
 	}
 	for in, want := range cases {
 		if got := MakeTag(in); got != want {
