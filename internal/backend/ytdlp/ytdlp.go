@@ -148,7 +148,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 		"--newline",
 		"-o", outtmpl,
 		"--merge-output-format", "mp4",
-		"--concurrent-fragment-downloads", "3",
+		"--concurrent-fragments", "3",
 		"--retries", "10",
 		"--fragment-retries", "10",
 		"--print", "after_move:filepath",

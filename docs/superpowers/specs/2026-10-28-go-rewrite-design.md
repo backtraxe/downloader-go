@@ -160,7 +160,7 @@ URL → sites.Detect → dispatch
 
 - `exec.LookPath("yt-dlp")`；缺失时返回 `failed` 并提示 `pkg install yt-dlp`。
 - 探测：`yt-dlp -J --skip-download --no-warnings --cookies <file> URL`，取 `uploader`、`title`、`ext`。
-- 下载：`yt-dlp --no-warnings --newline -o <template> --merge-output-format mp4 --concurrent-fragment-downloads 3 --retries 10 --fragment-retries 10 --print after_move:filepath ...`；`--force` 时加 `--force-overwrites`。
+- 下载：`yt-dlp --no-warnings --newline -o <template> --merge-output-format mp4 --concurrent-fragments 3 --retries 10 --fragment-retries 10 --print after_move:filepath ...`；`--force` 时加 `--force-overwrites`。
 - 用 `after_move:filepath` 拿最终文件，避免扫描目录。
 - Instagram 图文帖没有视频格式，yt-dlp 默认以 “There is no video in this
   post” 失败。探测时对 Instagram 加 `--ignore-no-formats-error`，若结果无视频
