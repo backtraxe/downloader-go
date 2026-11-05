@@ -34,6 +34,9 @@ func TestDownloadProbesThenDownloads(t *testing.T) {
 	if !contains(calls[1], "--print") {
 		t.Fatalf("missing print: %v", calls[1])
 	}
+	if !contains(calls[1], "--concurrent-fragments") || contains(calls[1], "--concurrent-fragment-downloads") {
+		t.Fatalf("invalid fragment concurrency option: %v", calls[1])
+	}
 }
 
 func TestMissingBinaryFailsWithHint(t *testing.T) {
