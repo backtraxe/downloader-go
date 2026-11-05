@@ -383,6 +383,57 @@ func TestInstagramVideoStillUsesNormalDownload(t *testing.T) {
 	}
 }
 
+// TestInstagramFallsBackToChannelForAuthor 验证 uploader 为空时使用 channel
+// （用户名）作作者，保证 Telegram caption 仍有 #作者 标签。
+func TestInstagramFallsBackToChannelForAuthor(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "download", "instagram", "some_user", "Pic_abc.jpg")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, []byte("jpg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := `{"title":"Pic","uploader":"","uploader_id":"123","channel":"some_user",` +
+		`"thumbnails":[{"url":"https://cdn/1.jpg"}]}`
+	d, calls := newTestDownloader(t, dir, probe, out+"\n")
+	res := d.Download(context.Background(), "https://www.instagram.com/p/abc/", false)
+
+	if res.Status != "downloaded" || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if res.Posts[0].Author != "some_user" {
+		t.Fatalf("author=%q want some_user", res.Posts[0].Author)
+	}
+	outtmpl := (*calls)[1][indexOf((*calls)[1], "-o")+1]
+	if !strings.Contains(outtmpl, filepath.Join("instagram", "some_user")) {
+		t.Fatalf("outtmpl=%q", outtmpl)
+	}
+}
+
+// TestInstagramCarouselFallsBackToEntryAuthor 验证图集顶层没有作者时，
+// 从第一个带作者的 entry 取。
+func TestInstagramCarouselFallsBackToEntryAuthor(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "download", "instagram", "entry_user", "Post_a.jpg")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(out, []byte("jpg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := `{"title":"Post","entries":[{"id":"a","channel":"entry_user",` +
+		`"thumbnails":[{"url":"https://cdn/a.jpg"}]}]}`
+	d, _ := newTestDownloader(t, dir, probe, out+"\n")
+	res := d.Download(context.Background(), "https://www.instagram.com/p/carousel/", false)
+
+	if res.Status != "downloaded" || res.Posts[0].Author != "entry_user" {
+		t.Fatalf("%+v", res)
+	}
+}
+
 func indexOf(args []string, want string) int {
 	for i, a := range args {
 		if a == want {
