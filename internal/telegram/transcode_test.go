@@ -53,6 +53,11 @@ func heicMagic() []byte {
 }
 
 func TestPreparePhotoHEICUsesHEIFConvert(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(logging.New(&logs, slog.LevelInfo))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a.heic")
 	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
@@ -72,6 +77,9 @@ func TestPreparePhotoHEICUsesHEIFConvert(t *testing.T) {
 	}
 	if st, err := os.Stat(got); err != nil || st.Size() == 0 {
 		t.Fatalf("output missing: %v", err)
+	}
+	if !strings.Contains(logs.String(), "使用 libheif 转换图片") || !strings.Contains(logs.String(), "format=heic") {
+		t.Fatalf("conversion diagnostics missing: %q", logs.String())
 	}
 }
 
