@@ -58,6 +58,7 @@ func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared stri
 	}
 
 	format := media.DetectImageFormat(path)
+	slog.InfoContext(ctx, "识别图片格式", "path", path, "format", format)
 	unsupported := format != media.ImageFormatJPEG && format != media.ImageFormatPNG
 	width, height, dimsKnown := photoDimensions(path)
 	// JPEG/PNG 也可能损坏或使用 Go 无法解码的变体；读不出尺寸时交给
@@ -145,6 +146,8 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, format media.
 		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限，
 		// 极端长图也可能仍超过 Telegram 的宽高比限制。
 		if convertedW, convertedH, known := photoDimensions(out); known {
+			slog.InfoContext(ctx, "图片转换结果尺寸",
+				"path", out, "width", convertedW, "height", convertedH)
 			if exceedsAspectRatio(convertedW, convertedH) {
 				failureReason = "转换后的宽高比仍超出 Telegram 限制"
 				return "", false
@@ -292,6 +295,7 @@ func (u *Uploader) runHEIFConvert(ctx context.Context, path, out string) error {
 	if tool == "" {
 		tool = "heif-convert"
 	}
+	slog.InfoContext(ctx, "使用 libheif 转换图片", "path", path, "tool", tool)
 	_, stderr, err := u.run(ctx, tool, "-q", "90", path, out)
 	if err != nil {
 		return fmt.Errorf("telegram: heif-convert: %w%s", err, stderrSuffix(stderr))

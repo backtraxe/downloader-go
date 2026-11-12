@@ -98,6 +98,26 @@ const (
 	ImageFormatAVIF
 )
 
+// String 返回用于日志的格式名，便于区分识别错误与错误的转换分支。
+func (f ImageFormat) String() string {
+	switch f {
+	case ImageFormatJPEG:
+		return "jpeg"
+	case ImageFormatPNG:
+		return "png"
+	case ImageFormatGIF:
+		return "gif"
+	case ImageFormatWebP:
+		return "webp"
+	case ImageFormatHEIC:
+		return "heic"
+	case ImageFormatAVIF:
+		return "avif"
+	default:
+		return "unknown"
+	}
+}
+
 // DetectImageFormat 读取文件头识别图片格式。
 //
 // 站点常把 WebP/HEIC 原图保存成 .jpg，按扩展名判断会漏掉需要转码的

@@ -251,6 +251,7 @@ func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context
 
 	// 启动行只包含非敏感信息：数据目录、白名单人数与过程消息 TTL。
 	slog.Info("机器人启动",
+		"version", version,
 		"data_dir", dataDir,
 		"allowed_users", len(cfg.AllowedUsers),
 		"ttl_seconds", cfg.TTL(),
