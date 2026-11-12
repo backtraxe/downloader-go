@@ -12,7 +12,9 @@
 目标是用 Go 重写业务逻辑，做到：
 
 - 单个静态二进制，Termux 系统升级不影响自身运行；
-- 只保留两个外部命令：`yt-dlp`（负责 bilibili/youtube/instagram/twitter）与 `ffmpeg`（HEIC/WebP 预览、大图与 >50MB 视频压缩），两者都由 Termux 包管理器维护；
+- 只保留三个外部命令：`yt-dlp`（负责 bilibili/youtube/instagram/twitter）、
+  `ffmpeg`（WebP 预览、大图与 >50MB 视频压缩）与 `heif-convert`
+  （通过 libheif 正确装配 HEIC/AVIF 图块），都由 Termux 包管理器维护；
 - TLS 指纹用纯 Go 的 `utls` 模拟 Chrome，替代 `curl_cffi`；
 - 保持现有 Cookie 文件、`config.json`、`download/` 目录布局兼容，用户可平滑切换；
 - GitHub Actions 自动测试、交叉编译并在打 tag 时发布 Release，Termux 一条命令安装/升级。
@@ -26,11 +28,12 @@
 3. Cookie 维护：Netscape / `Cookie:` 请求头 / JSON 自动识别导入，离线体检。
 4. 输出目录、文件名、`--force`、重复链接跳过等行为与 Python 版一致。
 5. CI 覆盖单元测试与静态检查；Release 产出多平台二进制和校验和。
-6. Termux 安装脚本：自动识别架构、下载对应 Release、校验 SHA256、检查 `yt-dlp`/`ffmpeg`。
+6. Termux 安装脚本：自动识别架构、下载对应 Release、校验 SHA256、检查
+   `yt-dlp`/`ffmpeg`/`heif-convert`。
 
 ### 非目标
 
-- 不重写 yt-dlp 的站点提取器；不打包 yt-dlp/ffmpeg。
+- 不重写 yt-dlp 的站点提取器；不打包 yt-dlp/ffmpeg/libheif-progs。
 - 不做 live photo 后处理（现有 `core/tools/live_photo.py` 的 Motion Photo / iOS 功能不迁移）。
 - 不做 Playwright 半自动登录（`cookie_login.py` 不迁移）。
 - 不做 Web UI、常驻服务端、多用户队列、2GB 自建 Bot API。
@@ -50,7 +53,8 @@
 - Telegram 官方 Bot API：单文件 ≤50MB，照片 ≤10MB，相册每组 ≤10 项。
 - `utls` 为纯 Go 依赖，可静态交叉编译；不引入任何 CGO 依赖。
 - Cookie 与 `config.json` 属于敏感数据，不提交、不打印值。
-- 运行环境可能没有 `ffmpeg`：HEIC/大图/大视频相关能力降级为按文件发送或跳过。
+- 运行环境可能没有 `ffmpeg` 或 `heif-convert`：HEIC/大图/大视频相关能力
+  降级为按文件发送或跳过，转换失败必须记录原因。
 
 ## 4. 方案选择
 
@@ -201,8 +205,9 @@ URL → sites.Detect → dispatch
   - 照片 >10MB、尺寸和 >10000 或宽高比 >20：ffmpeg 缩放/压到 ≤10MB；失败
     降级 `sendDocument`（宽高比超限无法靠等比缩放修复时直接按文件发送）；
   - 图片格式按文件头识别，不信任扩展名：小红书等站点常把 WebP/HEIC 存成
-    `.jpg`，相册对格式比单张 `sendPhoto` 更严格，WebP/HEIC/AVIF/未知格式
-    先用 ffmpeg 转 JPEG，失败按文件发送；
+    `.jpg`，相册对格式比单张 `sendPhoto` 更严格。HEIC/AVIF 优先用
+    `heif-convert`（libheif-progs）正确组装原图，不能用 ffmpeg 取单个
+    `hvc1` 图块冒充完整图；WebP 等由 ffmpeg 转 JPEG。转换失败按文件发送；
   - `sendMediaGroup` 因 `IMAGE_PROCESS_FAILED` 整组失败时逐项重发，仍失败
     的照片再降级 `sendDocument`，避免一张坏图中断整批；
   - 视频 >50MB：ffmpeg 按码率预算压到 ~49MB，失败则跳过并提示本地路径；
@@ -274,7 +279,8 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 - 通过 GitHub Releases API 或固定 latest 下载 URL 获取对应 tarball。
 - 校验 `checksums.txt` 中的 SHA256。
 - 安装到 `$PREFIX/bin/downloader`（无写权限则 `~/bin`）。
-- 检查 `yt-dlp`/`ffmpeg`，缺失时提示 `pkg install yt-dlp ffmpeg`。
+- 检查 `yt-dlp`/`ffmpeg`/`heif-convert`，缺失时提示
+  `pkg install yt-dlp ffmpeg libheif-progs`。
 - 支持 `DOWNLOADER_VERSION=v0.1.0` 指定版本。
 - 支持 `--data-dir DIR`：幂等写入 `DOWNLOADER_HOME=DIR` 到 `~/.bashrc`/`~/.zshrc`，让命令在任意目录可用。
 - 支持 `--migrate-from OLD_DIR`：复制 `cookies/` 与 `config.json`，并在新数据目录不存在 `download/` 时为其创建指向旧目录的符号链接（避免搬运大文件）。
@@ -298,7 +304,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 | utls 的 HTTP/2 指纹与 Chrome 不完全一致 | M0 真机 spike 先验证；失败则 v1 增加系统 curl 兜底；必要时切换 HTTP/1.1 profile |
 | 抖音签名随服务端更新失效 | 移植时保留测试向量；签名模块独立，便于按上游 diff 更新 |
 | yt-dlp 输出/参数变化 | 只用稳定参数（`-J`、`after_move:filepath`），失败时回显 stderr |
-| Termux 无 ffmpeg | HEIC/大图/大视频降级为 document 或跳过，核心下载不受影响 |
+| Termux 无 ffmpeg / heif-convert | HEIC/大图/大视频降级为 document 或跳过，核心下载不受影响 |
 | 相册混排/50MB 边界 | 手写 multipart，按 Bot API 文档逐项校验；上传前统一读取文件大小 |
 | 通用抓取误判装饰图 | 复用现有文件名关键词 + 尺寸阈值 + `.skip` 策略 |
 

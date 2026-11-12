@@ -82,7 +82,7 @@ func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared stri
 		return path, true, nil
 	}
 
-	out, ok := u.compressPhoto(ctx, path, unsupported, width, height, dimsKnown)
+	out, ok := u.compressPhoto(ctx, path, format, width, height, dimsKnown)
 	if !ok {
 		return path, true, nil
 	}
@@ -102,10 +102,11 @@ func exceedsAspectRatio(width, height int) bool {
 
 // compressPhoto 执行格式转换或大图缩放/质量阶梯。
 //
-// convert=true 时先按最高质量导出单帧 JPEG（WebP/HEIC/AVIF/未知格式），
-// 再重新量尺寸；其余情况直接按体积与宽高和做缩放/质量阶梯。
-// 返回 ok=false 表示 ffmpeg 不可用、失败或最终产物仍超限。
-func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool, width, height int, dimsKnown bool) (string, bool) {
+// HEIC/AVIF 先经 libheif 的 heif-convert 正确装配图块，WebP 等其余格式
+// 由 ffmpeg 导出单帧 JPEG，再重新量尺寸；其余情况直接按体积与宽高和做
+// 缩放/质量阶梯。返回 ok=false 表示所需外部工具不可用、失败或仍超限。
+func (u *Uploader) compressPhoto(ctx context.Context, path string, format media.ImageFormat, width, height int, dimsKnown bool) (string, bool) {
+	convert := format != media.ImageFormatJPEG && format != media.ImageFormatPNG
 	failureReason := "转换后的尺寸或体积仍不符合 Telegram 限制"
 	success := false
 	defer func() {
@@ -127,11 +128,19 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool,
 	base := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", path, "-frames:v", "1"}
 
 	if convert {
-		// Termux 的 libheif 不带 CLI，ffmpeg 原生解 HEIF/WebP/AVIF 单帧即可。
-		args := append(append([]string{}, base...), "-q:v", "2", out)
-		if err := u.runFFmpeg(ctx, args); err != nil {
-			failureReason = err.Error()
-			return "", false
+		if format == media.ImageFormatHEIC || format == media.ImageFormatAVIF {
+			// 分块 HEIF 需要 libheif 组装主图；ffmpeg 单帧取某个 hvc1
+			// 图像项会产生局部预览，不能作为正确回退路径。
+			if err := u.runHEIFConvert(ctx, path, out); err != nil {
+				failureReason = err.Error()
+				return "", false
+			}
+		} else {
+			args := append(append([]string{}, base...), "-q:v", "2", out)
+			if err := u.runFFmpeg(ctx, args); err != nil {
+				failureReason = err.Error()
+				return "", false
+			}
 		}
 		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限，
 		// 极端长图也可能仍超过 Telegram 的宽高比限制。
@@ -272,6 +281,20 @@ func (u *Uploader) runFFmpeg(ctx context.Context, args []string) error {
 	_, stderr, err := u.run(ctx, ffmpeg, args...)
 	if err != nil {
 		return fmt.Errorf("telegram: ffmpeg: %w%s", err, stderrSuffix(stderr))
+	}
+	return nil
+}
+
+// runHEIFConvert 用 libheif 的工具把 HEIC/AVIF 正确合成 JPEG。
+// 不能回退到 ffmpeg 的单 hvc1 流：那是图块而不是完整主图。
+func (u *Uploader) runHEIFConvert(ctx context.Context, path, out string) error {
+	tool := u.HEIFConvert
+	if tool == "" {
+		tool = "heif-convert"
+	}
+	_, stderr, err := u.run(ctx, tool, "-q", "90", path, out)
+	if err != nil {
+		return fmt.Errorf("telegram: heif-convert: %w%s", err, stderrSuffix(stderr))
 	}
 	return nil
 }

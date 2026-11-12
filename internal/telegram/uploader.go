@@ -16,14 +16,16 @@ const albumSize = 10
 
 // Uploader 把一次下载结果中的文件上传到 Telegram。
 //
-// FFmpeg/FFprobe 为空时使用 PATH 中的同名命令；Run 为空时直接执行外部
-// 命令。WorkDir 是转码产物的落盘目录，为空时使用系统临时目录。
+// FFmpeg/FFprobe/HEIFConvert 为空时使用 PATH 中的同名命令；
+// Run 为空时直接执行外部命令。WorkDir 是转码产物的落盘目录，为空时使用
+// 系统临时目录。
 type Uploader struct {
-	API     *tgapi.Client
-	FFmpeg  string
-	FFprobe string
-	Run     Runner
-	WorkDir string
+	API         *tgapi.Client
+	FFmpeg      string
+	FFprobe     string
+	HEIFConvert string
+	Run         Runner
+	WorkDir     string
 }
 
 // Send 上传 post.Files 并返回成功文件数与被跳过的本地路径。
