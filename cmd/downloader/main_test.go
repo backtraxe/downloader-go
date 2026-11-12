@@ -186,7 +186,7 @@ func TestRunWithRoutesBotAndUpload(t *testing.T) {
 
 func TestRunBotPlaceholderConfig(t *testing.T) {
 	dir := t.TempDir()
-	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":300}}`
+	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":10}}`
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestRunBotPlaceholderConfig(t *testing.T) {
 
 func TestRunUploadPlaceholderConfig(t *testing.T) {
 	dir := t.TempDir()
-	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":300}}`
+	template := `{"telegram":{"bot_token":"在此填入 @BotFather 给的 token","chat_id":0,"allowed_users":[],"process_message_ttl_seconds":10}}`
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}

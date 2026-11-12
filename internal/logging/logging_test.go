@@ -7,13 +7,14 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRequestIDFormatAndPrefix(t *testing.T) {
 	var buf bytes.Buffer
 	logger := New(&buf, slog.LevelInfo)
 	ctx, id := WithRequest(context.Background())
-	if !regexp.MustCompile(`^r[a-z0-9]{4}$`).MatchString(id) {
+	if !regexp.MustCompile(`^r[A-Za-z0-9]{7}$`).MatchString(id) {
 		t.Fatalf("id=%q", id)
 	}
 	logger.InfoContext(ctx, "hello")
@@ -52,7 +53,7 @@ func TestNoPrefixWithoutRequest(t *testing.T) {
 }
 
 func TestNewIDUniqueAndFormatted(t *testing.T) {
-	pattern := regexp.MustCompile(`^r[a-z0-9]{4}$`)
+	pattern := regexp.MustCompile(`^r[A-Za-z0-9]{7}$`)
 	seen := make(map[string]struct{}, 500)
 	for range 500 {
 		id := NewID()
@@ -74,6 +75,41 @@ func TestWithAttrsKeepsPrefix(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "["+id+"] attrs") || !strings.Contains(out, "k=v") {
 		t.Fatalf("log=%q", out)
+	}
+}
+
+func TestShortLogFormat(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(&buf, slog.LevelInfo)
+	logger.Info("收到链接", "link", "https://example.com/a", "note", "two words")
+	line := strings.TrimSuffix(buf.String(), "\n")
+	want := `^\d{8} \d{6}[+-]\d{2} INFO 收到链接 link=https://example.com/a note="two words"$`
+	if !regexp.MustCompile(want).MatchString(line) {
+		t.Fatalf("log=%q does not match %q", line, want)
+	}
+}
+
+func TestLogTimeUsesConfiguredZone(t *testing.T) {
+	var buf bytes.Buffer
+	handler := newShortHandler(&buf, slog.LevelInfo)
+	record := slog.NewRecord(
+		time.Date(2026, 11, 13, 1, 55, 16, 0, time.FixedZone("CST", 8*3600)),
+		slog.LevelInfo, "测试", 0,
+	)
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := buf.String(), "20261113 015516+08 INFO 测试\n"; got != want {
+		t.Fatalf("log=%q want %q", got, want)
+	}
+}
+
+func TestWithGroupKeepsStructuredField(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(&buf, slog.LevelInfo).WithGroup("download")
+	logger.Info("完成", "site", "xiaohongshu")
+	if !strings.Contains(buf.String(), " download.site=xiaohongshu\n") {
+		t.Fatalf("log=%q", buf.String())
 	}
 }
 
