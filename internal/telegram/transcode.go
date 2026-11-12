@@ -158,6 +158,10 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, format media.
 			success = true
 			return out, true
 		}
+
+		// 如果第一轮转换后的 JPEG 仍超标，接下来必须以这份完整 JPEG 为输入。
+		// 否则 ffmpeg 会再次从原始 HEIF 选出一个 hvc1 图块，覆盖正确的产物。
+		base = []string{"-hide_banner", "-loglevel", "error", "-y", "-i", out, "-frames:v", "1"}
 	}
 
 	canScale := dimsKnown && width+height > maxPhotoDimSum

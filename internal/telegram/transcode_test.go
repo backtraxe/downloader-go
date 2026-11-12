@@ -125,6 +125,18 @@ func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 	if strings.Contains(scaling, " -vf ") {
 		t.Fatalf("simple -vf conflicts with automatic rotation: %v", calls)
 	}
+	// 已完成 HEIF→JPEG 后，再压缩或缩放必须以完整 JPEG 为输入，不能重新
+	// 解码原始 HEIC 并让局部图块覆盖第一份正确产物。
+	inputIndex := -1
+	for i, arg := range calls[1] {
+		if arg == "-i" {
+			inputIndex = i + 1
+			break
+		}
+	}
+	if inputIndex < 0 || calls[1][inputIndex] != got {
+		t.Fatalf("later ffmpeg stage must read the converted JPEG %q: %v", got, calls[1])
+	}
 }
 
 func TestPreparePhotoNormalUnchanged(t *testing.T) {
