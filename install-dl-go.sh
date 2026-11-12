@@ -233,16 +233,16 @@ if [ -n "$MIGRATE_FROM" ]; then
 fi
 
 missing=""
-for cmd in yt-dlp ffmpeg; do
+for cmd in yt-dlp ffmpeg heif-convert; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     missing="$missing $cmd"
   fi
 done
 if [ -n "$missing" ]; then
   log "缺少外部命令:${missing}"
-  log "请运行: pkg install yt-dlp ffmpeg"
+  log "请运行: pkg install yt-dlp ffmpeg libheif-progs"
 else
-  log "yt-dlp 与 ffmpeg 已安装。"
+  log "yt-dlp、ffmpeg 与 heif-convert 已安装。"
 fi
 
 log "安装完成，当前版本："

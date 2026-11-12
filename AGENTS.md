@@ -114,8 +114,9 @@ gh release view v0.1.1 --json tagName,isDraft,isPrerelease,assets
 - **Go 版本**：`go 1.27`；构建、测试、发布一律 `CGO_ENABLED=0`。
 - **平台**：`linux/arm64`（Termux 主目标）、`linux/amd64`、`darwin/arm64`、
   `darwin/amd64`、`windows/amd64`；不新增需要 CGO 的依赖。
-- **主流程不依赖 Python**：`yt-dlp`、`ffmpeg` 只能通过
+- **主流程不依赖 Python**：`yt-dlp`、`ffmpeg`、`heif-convert` 只能通过
   `exec.CommandContext` 调用；缺失时降级或返回 `failed`，不得 panic。
+  `heif-convert` 来自 Termux 的 `libheif-progs`，用于正确组装分块 HEIC/AVIF。
 - **数据目录**：`--data-dir` > `DOWNLOADER_HOME` > 当前工作目录；
   `download/`、`cookies/`、`config.json` 都相对于数据目录。`--data-dir`
   只接受写在子命令之前。

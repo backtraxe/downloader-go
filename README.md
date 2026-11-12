@@ -3,7 +3,7 @@
 `download-bot` 的 Go 重写版：单个静态二进制，面向 Termux，支持小红书、抖音、
 通用网页与 yt-dlp 站点下载，并可选作为 Telegram 机器人把结果回传。
 
-主流程不依赖 Python；`yt-dlp` 与 `ffmpeg` 作为外部命令按需调用。
+主流程不依赖 Python；`yt-dlp`、`ffmpeg` 与 `heif-convert` 作为外部命令按需调用。
 
 ## Termux 安装
 
@@ -32,8 +32,8 @@ bash install-dl-go.sh --data-dir "$HOME/dl-go-data" \
   --migrate-from "$HOME/old-dl-go-data"
 ```
 
-脚本最后会检查 `yt-dlp` 与 `ffmpeg`，缺失时提示
-`pkg install yt-dlp ffmpeg`，并打印 `dl-go version`。
+脚本最后会检查 `yt-dlp`、`ffmpeg` 与 `heif-convert`，缺失时提示
+`pkg install yt-dlp ffmpeg libheif-progs`，并打印 `dl-go version`。
 
 ### Termux DNS
 
@@ -133,10 +133,11 @@ bot 的 `getUpdates` 失败后会按 5、10、20、40、60 秒逐步退避，成
 | 命令 | 用途 | 缺失时 |
 | --- | --- | --- |
 | `yt-dlp` | bilibili / YouTube / Instagram / Twitter 等站点 | 返回 `failed` 并提示安装 |
-| `ffmpeg` | HEIC/WebP 转 JPEG、超大图片与视频压缩 | 降级为 document 或跳过 |
+| `ffmpeg` | WebP 预览、大图与大视频压缩 | 降级为 document 或跳过 |
+| `heif-convert` | 正确组装 HEIC/HEIF/AVIF 图像及分块图 | 降级为 document，记录转换失败原因 |
 
 ```bash
-pkg install yt-dlp ffmpeg
+pkg install yt-dlp ffmpeg libheif-progs
 ```
 
 ## Release 平台

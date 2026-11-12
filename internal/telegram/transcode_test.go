@@ -52,7 +52,7 @@ func heicMagic() []byte {
 	return append([]byte{0x00, 0x00, 0x00, 0x18}, []byte("ftypheic")...)
 }
 
-func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
+func TestPreparePhotoHEICUsesHEIFConvert(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a.heic")
 	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
@@ -64,8 +64,11 @@ func TestPreparePhotoHEICUsesFFmpeg(t *testing.T) {
 	if err != nil || asDoc || !strings.HasSuffix(got, ".jpg") {
 		t.Fatalf("%s %v %v", got, asDoc, err)
 	}
-	if len(calls) != 1 || !strings.Contains(joinCall(calls[0]), "-frames:v") {
-		t.Fatalf("%v", calls)
+	if len(calls) != 1 || calls[0][0] != "heif-convert" || !strings.Contains(joinCall(calls[0]), "-q 90") {
+		t.Fatalf("HEIF must be assembled by libheif before JPEG preparation: %v", calls)
+	}
+	if strings.Contains(joinCall(calls[0]), "-frames:v") {
+		t.Fatalf("single-tile ffmpeg decoding must not be used: %v", calls)
 	}
 	if st, err := os.Stat(got); err != nil || st.Size() == 0 {
 		t.Fatalf("output missing: %v", err)
@@ -184,6 +187,26 @@ func TestPreparePhotoOversizedFallback(t *testing.T) {
 	got, asDoc, err := u.PreparePhoto(context.Background(), src)
 	if err != nil || !asDoc || got != src {
 		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+}
+
+func TestPreparePhotoHEIFConvertFailureDoesNotUseSingleTileFallback(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.heic")
+	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	u := &Uploader{FFmpeg: "ffmpeg", WorkDir: t.TempDir(), Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, []byte("unsupported tile layout"), errors.New("decoder failed")
+	}}
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || !asDoc || got != src {
+		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+	if len(calls) != 1 || calls[0][0] != "heif-convert" {
+		t.Fatalf("must not silently fall back to a partial image: %v", calls)
 	}
 }
 
