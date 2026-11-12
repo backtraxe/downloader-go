@@ -163,7 +163,13 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool,
 		for _, quality := range jpegQualities {
 			args := append([]string{}, base...)
 			if canScale {
-				args = append(args, "-vf", fmt.Sprintf("scale=%d:%d", curW, curH))
+				// 某些 HEIC 会让 ffmpeg 自动插入旋转滤镜；再叠加简单 -vf
+				// 会让 MJPEG 输出报 simple/complex filtering 冲突。所有滤镜统一
+				// 放在同一个 filter_complex 中，自动旋转才能与缩放兼容。
+				args = append(args,
+					"-filter_complex", fmt.Sprintf("[0:v]scale=%d:%d[out]", curW, curH),
+					"-map", "[out]",
+				)
 			}
 			args = append(args, "-q:v", quality, out)
 			if err := u.runFFmpeg(ctx, args); err != nil {
