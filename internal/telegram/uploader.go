@@ -26,6 +26,8 @@ type Uploader struct {
 	HEIFConvert string
 	Run         Runner
 	WorkDir     string
+	// KeepGenerated 用于诊断时保留转换后的临时图片；默认发送后清理。
+	KeepGenerated bool
 }
 
 // Send 上传 post.Files 并返回成功文件数与被跳过的本地路径。
@@ -45,6 +47,9 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 	var documents []string
 	var generated []string
 	defer func() {
+		if u.KeepGenerated {
+			return
+		}
 		for _, path := range generated {
 			_ = os.Remove(path)
 		}

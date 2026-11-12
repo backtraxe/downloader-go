@@ -254,6 +254,43 @@ func TestSendAlbumFallsBackToSinglesAndDocument(t *testing.T) {
 	}
 }
 
+func TestSendKeepsGeneratedPhotosWhenRequested(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%v", keep), func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "a.heic")
+			if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var calls [][]string
+			rec := &uploadRecorder{}
+			srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+			t.Cleanup(srv.Close)
+			u := &Uploader{
+				API:           &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()},
+				WorkDir:       filepath.Join(dir, "work"),
+				KeepGenerated: keep,
+				Run: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+					calls = append(calls, append([]string(nil), args...))
+					out := args[len(args)-1]
+					writeTestJPEG(t, out, 100, 100)
+					return nil, nil, nil
+				},
+			}
+			if _, _, err := u.Send(context.Background(), "1", result.Post{Files: []string{src}}); err != nil {
+				t.Fatal(err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("calls=%v", calls)
+			}
+			prepared := calls[0][len(calls[0])-1]
+			if _, err := os.Stat(prepared); (err == nil) != keep {
+				t.Fatalf("keep=%v retained file stat error=%v", keep, err)
+			}
+		})
+	}
+}
+
 func TestSendSkipsOversizedDocument(t *testing.T) {
 	dir := t.TempDir()
 	big := filepath.Join(dir, "big.bin")

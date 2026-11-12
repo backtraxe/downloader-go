@@ -263,7 +263,7 @@ func runBot(ctx context.Context, dataDir string, dispatchFn func(context.Context
 		Config:   *cfg,
 		DataDir:  dataDir,
 		Dispatch: dispatchFn,
-		Uploader: &telegram.Uploader{API: api},
+		Uploader: &telegram.Uploader{API: api, KeepGenerated: os.Getenv("DOWNLOADER_KEEP_TRANSCODES") == "1"},
 	}
 	if err := bot.Run(ctx); err != nil {
 		fmt.Fprintf(stderr, "机器人运行失败：%v\n", err)
@@ -290,7 +290,7 @@ func runUpload(ctx context.Context, dataDir string, args []string, stdout, stder
 		return 1
 	}
 
-	u := &telegram.Uploader{API: newTelegramAPI(cfg.BotToken)}
+	u := &telegram.Uploader{API: newTelegramAPI(cfg.BotToken), KeepGenerated: os.Getenv("DOWNLOADER_KEEP_TRANSCODES") == "1"}
 	sent, skipped, err := telegram.UploadPath(ctx, u, cfg.ChatID.String(), path, caption)
 	if err != nil {
 		fmt.Fprintf(stderr, "上传失败：%v\n", err)
