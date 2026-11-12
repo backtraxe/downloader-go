@@ -107,8 +107,12 @@ func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 	if len(calls) < 2 {
 		t.Fatalf("converted JPEG dimensions were not re-checked: %v", calls)
 	}
-	if !strings.Contains(joinCall(calls[1]), "-vf") {
-		t.Fatalf("scale ladder not used: %v", calls)
+	scaling := joinCall(calls[1])
+	if !strings.Contains(scaling, "-filter_complex [0:v]scale=") || !strings.Contains(scaling, "-map [out]") {
+		t.Fatalf("scaling must use a single complex filtergraph: %v", calls)
+	}
+	if strings.Contains(scaling, " -vf ") {
+		t.Fatalf("simple -vf conflicts with automatic rotation: %v", calls)
 	}
 }
 
