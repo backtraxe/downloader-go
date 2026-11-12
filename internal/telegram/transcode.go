@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,8 @@ func (u *Uploader) PreparePhoto(ctx context.Context, path string) (prepared stri
 	}
 	// 长图等比缩放后宽高比不变，无法满足 Telegram 限制，按文件发送。
 	if dimsKnown && exceedsAspectRatio(width, height) {
+		slog.WarnContext(ctx, "图片宽高比超限，按文件发送",
+			"path", path, "width", width, "height", height)
 		return path, true, nil
 	}
 
@@ -103,11 +106,19 @@ func exceedsAspectRatio(width, height int) bool {
 // 再重新量尺寸；其余情况直接按体积与宽高和做缩放/质量阶梯。
 // 返回 ok=false 表示 ffmpeg 不可用、失败或最终产物仍超限。
 func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool, width, height int, dimsKnown bool) (string, bool) {
+	failureReason := "转换后的尺寸或体积仍不符合 Telegram 限制"
+	success := false
+	defer func() {
+		if !success {
+			slog.WarnContext(ctx, "图片转码失败，按文件发送", "path", path, "reason", failureReason)
+		}
+	}()
+
 	out, err := u.workFile(path, ".jpg")
 	if err != nil {
+		failureReason = err.Error()
 		return "", false
 	}
-	success := false
 	defer func() {
 		if !success {
 			_ = os.Remove(out)
@@ -119,12 +130,14 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool,
 		// Termux 的 libheif 不带 CLI，ffmpeg 原生解 HEIF/WebP/AVIF 单帧即可。
 		args := append(append([]string{}, base...), "-q:v", "2", out)
 		if err := u.runFFmpeg(ctx, args); err != nil {
+			failureReason = err.Error()
 			return "", false
 		}
 		// JPEG 产物也要重新量尺寸：宽幅全景可能体积达标但宽高和超限，
 		// 极端长图也可能仍超过 Telegram 的宽高比限制。
 		if convertedW, convertedH, known := photoDimensions(out); known {
 			if exceedsAspectRatio(convertedW, convertedH) {
+				failureReason = "转换后的宽高比仍超出 Telegram 限制"
 				return "", false
 			}
 			width, height, dimsKnown = convertedW, convertedH, true
@@ -154,6 +167,7 @@ func (u *Uploader) compressPhoto(ctx context.Context, path string, convert bool,
 			}
 			args = append(args, "-q:v", quality, out)
 			if err := u.runFFmpeg(ctx, args); err != nil {
+				failureReason = err.Error()
 				return "", false
 			}
 			if sizeAtMost(out, maxPhotoBytes) {

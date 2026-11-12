@@ -1,14 +1,18 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"image"
 	"image/jpeg"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/backtraxe/downloader-go/internal/logging"
 )
 
 // recordingRunner 记录调用并按约定造出 ffmpeg 的输出文件。
@@ -176,6 +180,37 @@ func TestPreparePhotoOversizedFallback(t *testing.T) {
 	got, asDoc, err := u.PreparePhoto(context.Background(), src)
 	if err != nil || !asDoc || got != src {
 		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+}
+
+func TestPreparePhotoDowngradeLogsReason(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(logging.New(&logs, slog.LevelWarn))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "large.jpg")
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxPhotoBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	u := &Uploader{FFmpeg: "ffmpeg", WorkDir: t.TempDir(), Run: func(context.Context, string, ...string) ([]byte, []byte, error) {
+		return nil, []byte("codec not available"), errors.New("decoder failed")
+	}}
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || !asDoc || got != src {
+		t.Fatalf("%s %v %v", got, asDoc, err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "按文件发送") || !strings.Contains(out, "codec not available") {
+		t.Fatalf("missing downgrade reason: %q", out)
 	}
 }
 
