@@ -46,7 +46,7 @@ func TestChatIDBothForms(t *testing.T) {
 }
 
 func TestTTLDefaultAndZero(t *testing.T) {
-	if got := (Telegram{}).TTL(); got != 300 {
+	if got := (Telegram{}).TTL(); got != 10 {
 		t.Fatalf("default=%d", got)
 	}
 	zero := 0

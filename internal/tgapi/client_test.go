@@ -1,6 +1,7 @@
 package tgapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,6 +118,125 @@ func TestCallMultipartUploadsFile(t *testing.T) {
 		t.Fatal(err)
 	} else if len(entries) != 0 {
 		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func retryTestClient(attempts *int, bodies *[][]byte, alwaysFail bool) *Client {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		*attempts++
+		body, _ := io.ReadAll(req.Body)
+		*bodies = append(*bodies, body)
+		if *attempts == 1 || alwaysFail {
+			return nil, &net.DNSError{Err: "temporary DNS failure", IsTemporary: true}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{}}`)),
+		}, nil
+	})
+	return &Client{Token: "T", BaseURL: "http://example.test", HTTP: &http.Client{Transport: transport}}
+}
+
+func TestMultipartRetriesTransientNetworkErrorAndRewindsBody(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.jpg")
+	if err := os.WriteFile(p, []byte("JPEG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	var bodies [][]byte
+	c := retryTestClient(&attempts, &bodies, false)
+
+	if _, err := c.CallMultipart(context.Background(), "sendPhoto", map[string]string{"chat_id": "1"}, map[string]string{"photo": p}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || len(bodies) != 2 {
+		t.Fatalf("attempts=%d bodies=%d", attempts, len(bodies))
+	}
+	if !bytes.Equal(bodies[0], bodies[1]) || !bytes.Contains(bodies[1], []byte("JPEG")) {
+		t.Fatalf("body was not replayed in full")
+	}
+}
+
+func TestMultipartStopsAfterOneTransientRetry(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.jpg")
+	if err := os.WriteFile(p, []byte("JPEG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	var bodies [][]byte
+	c := retryTestClient(&attempts, &bodies, true)
+
+	if _, err := c.CallMultipart(context.Background(), "sendPhoto", nil, map[string]string{"photo": p}); err == nil {
+		t.Fatal("expected last network error")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts=%d want 2", attempts)
+	}
+}
+
+func TestMultipartDoesNotRetryHTTPError(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.jpg")
+	if err := os.WriteFile(p, []byte("JPEG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	c := &Client{Token: "T", BaseURL: "http://example.test", HTTP: &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":false,"description":"Bad Request: invalid media"}`)),
+			}, nil
+		}),
+	}}
+
+	_, err := c.CallMultipart(context.Background(), "sendPhoto", nil, map[string]string{"photo": p})
+	if err == nil || attempts != 1 {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+}
+
+type networkErrorBody struct{}
+
+func (networkErrorBody) Read([]byte) (int, error) {
+	return 0, &net.OpError{Op: "read", Err: errors.New("connection dropped")}
+}
+func (networkErrorBody) Close() error { return nil }
+
+func TestMultipartDoesNotRetryAfterReceivingResponse(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.jpg")
+	if err := os.WriteFile(p, []byte("JPEG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	c := &Client{Token: "T", BaseURL: "http://example.test", HTTP: &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       networkErrorBody{},
+			}, nil
+		}),
+	}}
+	if _, err := c.CallMultipart(context.Background(), "sendPhoto", nil, map[string]string{"photo": p}); err == nil {
+		t.Fatal("expected response body read error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d want 1: a received response must not be replayed", attempts)
 	}
 }
 

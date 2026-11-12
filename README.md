@@ -77,8 +77,43 @@ dl-go cookie import <site>       # 从 stdin 导入 Cookie 到 cookies/<site>.tx
 dl-go cookie check [sites...]    # 离线检查 Cookie 必需键
 ```
 
+向 bot 直接发送链接或带链接的分享文案即可下载；一条消息内的多个链接依次处理。
+发送 `/force <链接>` 可强制重新下载已存在的历史内容并回传，`/force` 后也可换行
+写链接；`/forceable` 等普通文本不会触发强制下载。
+
+bot 的 `getUpdates` 失败后会按 5、10、20、40、60 秒逐步退避，成功后恢复正常
+轮询。上传遇到明确的瞬时网络错误时最多自动重试一次，HTTP 参数错误、Cookie
+或权限问题不重试。终端会为每条链接记录下载耗时、上传耗时及成功/失败/跳过
+数量，聊天回复也会区分“全部回传”“部分回传成功”和“上传失败”。
+
 `bot` 与 `upload` 使用数据目录中的 `config.json`。首次运行 `bot` 时会生成模板，
 填入 `telegram` 段的 `bot_token`、`chat_id`、`allowed_users` 后重新运行。
+
+## Telegram 配置
+
+配置文件路径为 `<data-dir>/config.json`，完整模板如下：
+
+```json
+{
+  "telegram": {
+    "bot_token": "在此填入 @BotFather 给的 token",
+    "chat_id": 0,
+    "allowed_users": [],
+    "process_message_ttl_seconds": 10
+  }
+}
+```
+
+- `bot_token`：向 @BotFather 申请，勿提交或分享给他人。
+- `chat_id`：回传目标，支持数字 ID（如 `-1001234567890`）或频道用户名
+  字符串（如 `"@channel"`）。
+- `allowed_users`：允许使用机器人的用户数字 ID 数组，如 `[123456789]`；
+  空数组表示拒绝所有私聊/群聊用户，频道帖子不受白名单限制。
+- `process_message_ttl_seconds`：机器人过程提示消息的自动删除时间，默认
+  `10` 秒；设为 `0` 关闭。不删除用户消息和相册、视频等媒体消息。
+
+修改配置后需要重启 `bot`。兼容旧版 `telegram.json`：仅在 `config.json`
+不存在时读取，其内容是上述 `telegram` 段本身。
 
 ## 数据目录
 

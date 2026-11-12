@@ -24,13 +24,15 @@ const (
 	startupTimeout = 15 * time.Second
 	// pollTimeout 限制单次长轮询的时长；比 timeout 参数留出网络余量。
 	pollTimeout = 40 * time.Second
-	// retryDelay 是 getUpdates 失败后的重试间隔。
+	// retryDelay 是 getUpdates 首次失败后的重试间隔。
 	retryDelay = 5 * time.Second
+	// maxPollRetryDelay 是连续失败时的最大退避，避免固定短间隔刷日志。
+	maxPollRetryDelay = 60 * time.Second
 	// requestTimeout 限制单次前台 Telegram 调用（发消息、删除）。
 	requestTimeout = 60 * time.Second
 
 	// helpText 是 /start 与 /help 的回复。
-	helpText = "发链接即可：小红书 / 抖音图文或视频 / bilibili / youtube / instagram / x / 任意网页。产物会以相册或视频回传，caption 带 #作者 标签方便搜索。"
+	helpText = "发链接即可：小红书 / 抖音图文或视频 / bilibili / youtube / instagram / x / 任意网页。产物会以相册或视频回传，caption 带 #作者 标签方便搜索。\n/force <链接> 强制重下并回传。"
 	// noURLText 是消息中没有链接时的回复。
 	noURLText = "没识别到链接，直接发链接（可带分享文案）即可。"
 	// skippedText 是内容此前已下载过时的回复。
@@ -56,7 +58,8 @@ type Bot struct {
 // Run 启动长轮询循环，直到 ctx 被取消。
 //
 // 启动时先拉取一次积压更新并把 offset 推进到最新，避免重启后重复下载
-// 历史链接；之后的 getUpdates 失败会等待 5 秒再重试。ctx 取消时返回 nil。
+// 历史链接；后续 getUpdates 失败按 5/10/20/40/60 秒退避，成功后重置。
+// 轮询耗时会记录到日志，ctx 取消时返回 nil。
 func (b *Bot) Run(ctx context.Context) error {
 	offset, err := b.initialOffset(ctx)
 	if err != nil {
@@ -65,22 +68,34 @@ func (b *Bot) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return nil
 	}
+	consecutiveFailures := 0
 	for {
-		// 每轮长轮询单独限时：半开连接不会让循环永久卡住，超时后走 5s 重试。
+		// 每轮长轮询单独限时：半开连接不会让循环永久卡住，超时后退避重试。
 		pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+		started := time.Now()
 		updates, err := b.API.GetUpdates(pollCtx, offset, pollTimeoutSeconds)
 		cancel()
+		cost := time.Since(started).Round(time.Millisecond)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			slog.WarnContext(ctx, "getUpdates 失败，稍后重试", "error", err)
+			consecutiveFailures++
+			wait := pollRetryDelay(consecutiveFailures)
+			slog.WarnContext(ctx, "getUpdates 失败，稍后重试",
+				"error", err, "cost", cost,
+				"failures", consecutiveFailures, "retry_after", wait)
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(retryDelay):
+			case <-time.After(wait):
 			}
 			continue
+		}
+		if consecutiveFailures > 0 {
+			slog.InfoContext(ctx, "getUpdates 恢复",
+				"cost", cost, "previous_failures", consecutiveFailures)
+			consecutiveFailures = 0
 		}
 		for _, update := range updates {
 			offset = update.UpdateID + 1
@@ -99,6 +114,17 @@ func (b *Bot) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// pollRetryDelay 计算连续失败后的退避：5、10、20、40、60，之后保持 60 秒。
+func pollRetryDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return retryDelay
+	}
+	if failures >= 5 {
+		return maxPollRetryDelay
+	}
+	return retryDelay << uint(failures-1)
 }
 
 // initialOffset 拉取一次积压更新并返回下一个 offset。
@@ -137,20 +163,31 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 		return nil
 	}
 
+	// 仅识别独立的 /force 前缀；/forceable 仍按普通链接消息处理。
+	// 剥离前缀后，剩余分享文案里的链接统一强制重下并回传。
+	force := false
+	if fields := strings.Fields(text); len(fields) > 0 && fields[0] == "/force" {
+		force = true
+		text = strings.TrimSpace(strings.TrimPrefix(text, "/force"))
+	}
+
 	urls := urlutil.ExtractURLs(text)
 	if len(urls) == 0 {
 		return b.reply(ctx, chatID, noURLText)
 	}
 
 	for _, link := range urls {
-		// 单条链接 = 一个请求：下载与上传日志共享同一 [rXXXX] ID。
+		// 单条链接 = 一个请求：下载与上传日志共享同一 [rXXXXXXX] ID。
 		reqCtx, _ := logging.WithRequest(ctx)
 		slog.InfoContext(reqCtx, "收到链接", "link", link)
 		if err := b.reply(reqCtx, chatID, "开始下载："+link); err != nil {
 			return err
 		}
 
-		res := b.Dispatch(reqCtx, link, false)
+		downloadStarted := time.Now()
+		res := b.Dispatch(reqCtx, link, force)
+		slog.InfoContext(reqCtx, "下载完成",
+			"status", res.Status, "cost", time.Since(downloadStarted).Round(time.Millisecond))
 		switch res.Status {
 		case result.Failed:
 			detail := res.Message
@@ -185,21 +222,35 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 			continue
 		}
 
-		sent := 0
+		sent, failed := 0, 0
 		var skippedPaths []string
+		uploadStarted := time.Now()
 		for _, post := range res.Posts {
 			n, skippedFiles, err := b.Uploader.Send(reqCtx, chatID, post)
+			sent += n
+			skippedPaths = append(skippedPaths, skippedFiles...)
 			if err != nil {
+				if notSent := len(post.Files) - n; notSent > 0 {
+					failed += notSent
+				}
 				if replyErr := b.reply(reqCtx, chatID, "上传失败："+err.Error()); replyErr != nil {
 					return replyErr
 				}
 				continue
 			}
-			sent += n
-			skippedPaths = append(skippedPaths, skippedFiles...)
 		}
+		slog.InfoContext(reqCtx, "上传完成",
+			"sent", sent, "failed", failed, "skipped", len(skippedPaths),
+			"cost", time.Since(uploadStarted).Round(time.Millisecond))
 
 		completion := fmt.Sprintf("完成：%d 项已回传", sent)
+		if failed > 0 {
+			if sent > 0 {
+				completion = fmt.Sprintf("部分回传成功：%d 项已回传，%d 项失败", sent, failed)
+			} else {
+				completion = fmt.Sprintf("上传失败：%d 项未回传", failed)
+			}
+		}
 		if len(skippedPaths) > 0 {
 			completion += fmt.Sprintf("，%d 项超限跳过", len(skippedPaths))
 		}

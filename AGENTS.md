@@ -8,7 +8,7 @@
 ```text
 cmd/downloader/        子命令入口（run / bot / upload / cookie / version）
 internal/config        config.json 加载与旧 telegram.json 兼容
-internal/logging       请求级 [rXXXX] 日志
+internal/logging       请求级 [rXXXXXXX] 日志
 internal/result        Status / Result / Post 契约
 internal/sites         URL→站点名、Cookie 文件定位
 internal/urlutil       链接提取、URL 归一化、短链展开
@@ -30,7 +30,7 @@ internal/tgapi         Telegram Bot API multipart 客户端
 
 ```text
 cmd/downloader
-  → dispatch.Dispatcher       按站点路由，并为每个链接开启 [rXXXX] 日志作用域
+  → dispatch.Dispatcher       按站点路由，并为每个链接开启 [rXXXXXXX] 日志作用域
       ├─ xhs / douyin         Cookie 必需；抖音短链先展开再分流图文/视频
       ├─ ytdlp                bilibili / youtube / instagram / twitter
       └─ generic              其余网页

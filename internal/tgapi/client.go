@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -34,6 +37,16 @@ const (
 	// redactedToken 替换错误信息中的 bot token，避免凭据随错误进入日志。
 	redactedToken = "<redacted>"
 )
+
+// transportError 标记 client.Do 阶段的失败；响应已经返回后的读取错误不带
+// 此标记，避免把 Telegram 可能已经处理的媒体重新发一遍。
+type transportError struct {
+	method string
+	err    error
+}
+
+func (e *transportError) Error() string { return fmt.Sprintf("telegram %s: %v", e.method, e.err) }
+func (e *transportError) Unwrap() error { return e.err }
 
 // Client 是 Bot API 客户端。Zero value 不可用，请用 New 构造；
 // 测试可覆盖 BaseURL 与 HTTP。
@@ -65,7 +78,8 @@ func (c *Client) Call(ctx context.Context, method string, params url.Values) (js
 
 // CallMultipart 以 multipart/form-data 调用 method。fields 作为普通文本
 // 字段写入，files 的 key 为表单字段名、value 为本地文件路径，文件名取
-// 路径的 basename。返回 result 的原始 JSON。
+// 路径的 basename。返回 result 的原始 JSON。明确网络失败时自动重试一次，
+// 重试前回到临时文件头；HTTP 响应错误、参数错误与调用方取消不重试。
 //
 // 请求体写到临时文件而不是内存：50MB 视频或 10 项相册在 Termux 上整包
 // 缓存会 OOM。写入完成后回到文件头，显式设置 ContentLength 再发送，
@@ -105,17 +119,54 @@ func (c *Client) CallMultipart(ctx context.Context, method string, fields map[st
 	if err != nil {
 		return nil, fmt.Errorf("telegram %s: stat temp file: %w", method, err)
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("telegram %s: rewind temp file: %w", method, err)
+	contentType := mw.FormDataContentType()
+	for attempt := 0; ; attempt++ {
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("telegram %s: rewind temp file: %w", method, err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(method), tmp)
+		if err != nil {
+			return nil, fmt.Errorf("telegram %s: %w", method, c.redactTransportError(err))
+		}
+		req.ContentLength = info.Size()
+		req.Header.Set("Content-Type", contentType)
+		raw, err := c.do(req, method)
+		if err == nil {
+			return raw, nil
+		}
+		if attempt >= 1 || !isRetryableNetworkError(err) {
+			return nil, err
+		}
+		slog.WarnContext(ctx, "上传网络错误，稍后重试", "method", method, "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(method), tmp)
-	if err != nil {
-		return nil, fmt.Errorf("telegram %s: %w", method, c.redactTransportError(err))
+// isRetryableNetworkError 判断 client.Do 的传输错误是否值得重试一次。
+// HTTP-timeouts 时 Telegram 可能已处理媒体，所以只能依赖 Bot API 的幂等性
+// 控制重试次数，不能无限重试。调用方取消与 API 的业务错误不进入这里。
+func isRetryableNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
 	}
-	req.ContentLength = info.Size()
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	return c.do(req, method)
+	var transportErr *transportError
+	if !errors.As(err, &transportErr) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // writeFilePart 把本地文件作为表单文件字段写入。
@@ -229,7 +280,7 @@ func (c *Client) do(req *http.Request, method string) (json.RawMessage, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("telegram %s: %w", method, c.redactTransportError(err))
+		return nil, &transportError{method: method, err: c.redactTransportError(err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))

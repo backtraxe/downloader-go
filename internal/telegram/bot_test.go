@@ -1,8 +1,10 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/backtraxe/downloader-go/internal/config"
+	"github.com/backtraxe/downloader-go/internal/logging"
 	"github.com/backtraxe/downloader-go/internal/result"
 	"github.com/backtraxe/downloader-go/internal/tgapi"
 )
@@ -286,6 +289,74 @@ func TestHandleMessageSkippedAndFailed(t *testing.T) {
 	})
 }
 
+// TestForceCommandDownloadsAndUploadsAllLinks 验证 /force 支持空白分隔，
+// 且同一条消息内的所有链接都强制重下并回传。
+func TestForceCommandDownloadsAndUploadsAllLinks(t *testing.T) {
+	photo := writeTempJPEG(t)
+	type call struct {
+		url   string
+		force bool
+	}
+	var calls []call
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(_ context.Context, url string, force bool) result.Result {
+		calls = append(calls, call{url: url, force: force})
+		return result.Result{Status: result.Downloaded, Posts: []result.Post{{Title: "标题", Files: []string{photo}}}}
+	})
+
+	text := "/force\nhttps://example.com/a\nhttps://example.com/b"
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, text)); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0].url != "https://example.com/a" || calls[1].url != "https://example.com/b" {
+		t.Fatalf("calls=%+v", calls)
+	}
+	for _, call := range calls {
+		if !call.force {
+			t.Fatalf("/force was not propagated: %+v", calls)
+		}
+	}
+	if got := rec.uploadedCount(); got != 2 {
+		t.Fatalf("uploads=%d want 2", got)
+	}
+}
+
+func TestForceMustBeSeparateCommand(t *testing.T) {
+	rec := &fakeTelegram{}
+	force := true
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(_ context.Context, _ string, got bool) result.Result {
+		force = got
+		return result.Result{Status: result.Skipped}
+	})
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "/forceable https://example.com/a")); err != nil {
+		t.Fatal(err)
+	}
+	if force {
+		t.Fatal("/forceable must not enable force")
+	}
+}
+
+func TestForceWithoutURLReturnsHelp(t *testing.T) {
+	rec := &fakeTelegram{}
+	calls := 0
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(context.Context, string, bool) result.Result {
+		calls++
+		return result.Result{}
+	})
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "/force")); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("dispatch calls=%d want 0", calls)
+	}
+	replies := rec.replies()
+	if len(replies) != 1 || replies[0] != noURLText {
+		t.Fatalf("replies=%v", replies)
+	}
+}
+
 func TestHandleMessageUploadsOnlyNewFiles(t *testing.T) {
 	dir := t.TempDir()
 	new1 := filepath.Join(dir, "new1.jpg")
@@ -481,6 +552,80 @@ func (f *fakeTelegram) deletedIDs() []int64 {
 	out := make([]int64, len(f.deleted))
 	copy(out, f.deleted)
 	return out
+}
+
+func TestPollRetryDelay(t *testing.T) {
+	want := []time.Duration{
+		5 * time.Second,
+		10 * time.Second,
+		20 * time.Second,
+		40 * time.Second,
+		60 * time.Second,
+		60 * time.Second,
+	}
+	for i, expected := range want {
+		if got := pollRetryDelay(i + 1); got != expected {
+			t.Fatalf("attempt %d: delay=%v want %v", i+1, got, expected)
+		}
+	}
+	if got := pollRetryDelay(0); got != retryDelay {
+		t.Fatalf("zero attempt: delay=%v want %v", got, retryDelay)
+	}
+}
+
+func TestHandleMessageLogsElapsedAndUploadCounts(t *testing.T) {
+	var logBuf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(logging.New(&logBuf, slog.LevelInfo))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(context.Context, string, bool) result.Result {
+		return result.Result{Status: result.Downloaded, Posts: []result.Post{{Files: []string{writeTempJPEG(t)}}}}
+	})
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "https://example.com/x")); err != nil {
+		t.Fatal(err)
+	}
+	out := logBuf.String()
+	for _, want := range []string{"下载完成", "上传完成", "sent=1", "failed=0", "skipped=0", "cost="} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log %q missing %q", out, want)
+		}
+	}
+}
+
+func TestHandleMessageUploadFailureReportsFailureCounts(t *testing.T) {
+	rec := &fakeTelegram{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasSuffix(req.URL.Path, "/sendPhoto") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"Bad Request: invalid media"}`))
+			return
+		}
+		rec.handler(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	api := &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}
+	bot := &Bot{
+		API:    api,
+		Config: config.Telegram{AllowedUsers: []int64{1}},
+		Dispatch: func(context.Context, string, bool) result.Result {
+			return result.Result{Status: result.Downloaded, Posts: []result.Post{{Files: []string{writeTempJPEG(t)}}}}
+		},
+		Uploader: &Uploader{API: api},
+	}
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "https://example.com/x")); err != nil {
+		t.Fatal(err)
+	}
+	replies := strings.Join(rec.replies(), "\n")
+	if !strings.Contains(replies, "上传失败：1 项未回传") {
+		t.Fatalf("replies=%q", replies)
+	}
+	if strings.Contains(replies, "完成：0 项已回传") {
+		t.Fatalf("misleading completion: %q", replies)
+	}
 }
 
 func TestRunSkipsBacklogAndAdvancesOffset(t *testing.T) {

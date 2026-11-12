@@ -25,7 +25,7 @@ import (
 var ErrNotConfigured = errors.New("config not found")
 
 // DefaultProcessMessageTTL 是过程提示消息的默认存活秒数。
-const DefaultProcessMessageTTL = 300
+const DefaultProcessMessageTTL = 10
 
 // template 是缺失配置时写入的文件内容，与 Python 版保持一致。
 const template = `{
@@ -33,7 +33,7 @@ const template = `{
     "bot_token": "在此填入 @BotFather 给的 token",
     "chat_id": 0,
     "allowed_users": [],
-    "process_message_ttl_seconds": 300
+    "process_message_ttl_seconds": 10
   }
 }
 `
@@ -86,7 +86,7 @@ type Telegram struct {
 	BotToken     string  `json:"bot_token"`
 	ChatID       ChatID  `json:"chat_id"`
 	AllowedUsers []int64 `json:"allowed_users"`
-	// ProcessMessageTTLSeconds 为 nil 表示配置缺键，使用默认 300 秒；
+	// ProcessMessageTTLSeconds 为 nil 表示配置缺键，使用默认 10 秒；
 	// 指向 0 表示显式关闭过程提示消息的自动删除。
 	ProcessMessageTTLSeconds *int `json:"process_message_ttl_seconds"`
 }

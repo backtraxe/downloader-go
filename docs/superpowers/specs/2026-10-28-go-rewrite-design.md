@@ -83,7 +83,7 @@
 ```text
 cmd/downloader/main.go          子命令入口
 internal/config                 config.json + 旧 telegram.json 兼容
-internal/logging                请求级 [rXXXX] 日志
+internal/logging                请求级 [rXXXXXXX] 日志
 internal/result                 Status / Result / Post 契约
 internal/sites                  URL→站点名、Cookie 文件定位
 internal/cookies                格式识别、导入、体检、Netscape 生成
@@ -216,7 +216,7 @@ URL → sites.Detect → dispatch
 
 ### 5.7 日志
 
-- 每个链接一个随机 `[rXXXX]` 作用域；CLI、bot 单条消息、独立工具入口开启。
+- 每个链接一个随机 `[rXXXXXXX]` 作用域；CLI、bot 单条消息、独立工具入口开启。
 - 日志同时输出到 stderr；bot 常驻场景建议 tmux。
 
 ### 5.8 Cookie 与配置
