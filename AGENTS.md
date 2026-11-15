@@ -117,6 +117,10 @@ gh release view v0.1.1 --json tagName,isDraft,isPrerelease,assets
 - **主流程不依赖 Python**：`yt-dlp`、`ffmpeg`、`heif-convert` 只能通过
   `exec.CommandContext` 调用；缺失时降级或返回 `failed`，不得 panic。
   `heif-convert` 来自 Termux 的 `libheif-progs`，用于正确组装分块 HEIC/AVIF。
+- **HEIC/AVIF 两阶段转码**：先用 `heif-convert`（libheif）正确组装原图
+  得到完整 JPEG，再检查宽高与体积，后续缩放/压缩必须以这份 JPEG 为输入，
+  不得再次解码原始 HEIF/HEIC，让某个 `hvc1` 图块覆盖正确产物。回归测试见
+  `TestPreparePhotoHEICRechecksConvertedDimensions`。
 - **数据目录**：`--data-dir` > `DOWNLOADER_HOME` > 当前工作目录；
   `download/`、`cookies/`、`config.json` 都相对于数据目录。`--data-dir`
   只接受写在子命令之前。

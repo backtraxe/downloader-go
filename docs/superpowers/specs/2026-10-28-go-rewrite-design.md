@@ -191,6 +191,8 @@ URL → sites.Detect → dispatch
 **通用抓取**
 
 - goquery 扫描 `img/source/video` 的懒加载属性、`<a href>` 直链、行内 `background-image`。
+- 作者优先从内联 `var infotpc` JSON 对象的 `name` 提取，不执行脚本；
+  未识别时沿用标题中的“正文 来自 作者”规则。
 - 排除伪媒体链接（如 MediaWiki 文件页）。
 - 下载前按文件名关键词过滤装饰图；落盘后按短边 <300px 过滤（Go `image.DecodeConfig`，webp 用 `x/image/webp`；无法解码时回落 20KB 体积阈值）。
 - 总并发 5，同一 host 最多 2 路握手。
@@ -208,6 +210,8 @@ URL → sites.Detect → dispatch
     `.jpg`，相册对格式比单张 `sendPhoto` 更严格。HEIC/AVIF 优先用
     `heif-convert`（libheif-progs）正确组装原图，不能用 ffmpeg 取单个
     `hvc1` 图块冒充完整图；WebP 等由 ffmpeg 转 JPEG。转换失败按文件发送；
+  - 如果 `heif-convert` 输出的 JPEG 仍超限，缩放和质量压缩必须**以该 JPEG
+    为输入**，不能再次对原始 HEIF 使用 ffmpeg 解码，以免局部图块覆盖正确产物。
   - `sendMediaGroup` 因 `IMAGE_PROCESS_FAILED` 整组失败时逐项重发，仍失败
     的照片再降级 `sendDocument`，避免一张坏图中断整批；
   - 视频 >50MB：ffmpeg 按码率预算压到 ~49MB，失败则跳过并提示本地路径；

@@ -56,6 +56,53 @@ func TestExtractAuthor(t *testing.T) {
 	}
 }
 
+func TestExtractEmbeddedAuthor(t *testing.T) {
+	html := `<html><head><title>画廊</title></head><body>
+      <script>var unrelated = 1;</script>
+      <script>var infotpc = '{"a":"光明使者", "uid":"377126", "name":"昵称 O\'Reilly 北京", "icon":"https://cdn.example.com/avatar.gif", "cert":"xxxxx"}'; showFace('infotpc');</script>
+      <img src="https://cdn.example.com/avatar.gif" class="tpc_face">
+      </body></html>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := extractEmbeddedAuthor(doc); got != "昵称 O'Reilly 北京" {
+		t.Fatalf("author=%q", got)
+	}
+	if got := extractEmbeddedAuthor(nil); got != "" {
+		t.Fatalf("nil document author=%q", got)
+	}
+}
+
+func TestDownloadUsesEmbeddedAuthor(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/read.php", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>画廊</title></head><body>
+          <script>var infotpc = '{"a":"光明使者", "name":"作者名称", "icon":"https://www.qpic.ws/avatar.gif"}';</script>
+          <img src="/image.png">
+          </body></html>`)
+	})
+	image := pngBytes(t, 400, 400)
+	mux.HandleFunc("/image.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(image)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	d := &Downloader{
+		HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome133}),
+		DataDir: t.TempDir(),
+	}
+	res := d.Download(context.Background(), srv.URL+"/read.php?tid=7283434", false)
+	if res.Status != result.Downloaded || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if res.Posts[0].Author != "作者名称" {
+		t.Fatalf("author=%q", res.Posts[0].Author)
+	}
+}
+
 func TestExtractTitle(t *testing.T) {
 	cases := []struct {
 		html string
