@@ -84,7 +84,10 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 	// 返回的已清理标题用于目录名，避免作者信息在路径里重复一层。
 	rawTitle := strings.TrimSpace(doc.Find("title").First().Text())
 	title := ExtractTitle(doc)
-	author := ExtractAuthor(rawTitle, site)
+	author := extractEmbeddedAuthor(doc)
+	if author == "" {
+		author = ExtractAuthor(rawTitle, site)
+	}
 
 	dirTitle := title
 	if id := fsutil.ExtractURLNumericID(rawURL); id != "" {

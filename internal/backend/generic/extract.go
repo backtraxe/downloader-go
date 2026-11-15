@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"encoding/json"
 	"net/url"
 	"path"
 	"regexp"
@@ -28,6 +29,9 @@ const (
 )
 
 var (
+	// infotpcPattern 匹配内联脚本中 var infotpc = '<JSON 对象>' 的开头。
+	infotpcPattern = regexp.MustCompile(`(?s)\bvar\s+infotpc\s*=\s*'`)
+
 	// titleAuthorPattern 匹配 <title> 里的“正文 来自 作者 - 站点”尾巴。
 	titleAuthorPattern = regexp.MustCompile(`正文\s*来自\s*(.+?)\s*-\s*`)
 
@@ -150,6 +154,67 @@ func ExtractAuthor(title, site string) string {
 		return ""
 	}
 	return strings.TrimSpace(match[1])
+}
+
+// extractEmbeddedAuthor 从内联 JS 的 var infotpc 对象中取作者名。
+//
+// 仅支持样例页面的单引号 JSON 字符串，不执行脚本。遇到其他变量名、
+// 非法 JSON 或不匹配的字符串形式时返回空串，调用方再回退标题推断。
+func extractEmbeddedAuthor(doc *goquery.Document) string {
+	if doc == nil {
+		return ""
+	}
+	var author string
+	doc.Find("script").EachWithBreak(func(_ int, script *goquery.Selection) bool {
+		text := script.Text()
+		// 大库脚本与本函数无关，限制扫描量，避免给页面解析增加额外开销。
+		if len(text) > 1<<20 {
+			return true
+		}
+		match := infotpcPattern.FindStringIndex(text)
+		if match == nil {
+			return true
+		}
+		payload, ok := singleQuotedJSON(text[match[1]:])
+		if !ok {
+			return true
+		}
+		var info struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(payload), &info) != nil {
+			return true
+		}
+		author = strings.TrimSpace(info.Name)
+		return author == ""
+	})
+	return author
+}
+
+// singleQuotedJSON 读取一个以单引号包裹的 JSON 字符串，保留合法 JSON
+// 转义，并把 JavaScript 的 \' 恢复成普通单引号。
+func singleQuotedJSON(src string) (string, bool) {
+	var out strings.Builder
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '\'':
+			return out.String(), true
+		case '\\':
+			if i+1 >= len(src) {
+				return "", false
+			}
+			i++
+			if src[i] == '\'' {
+				out.WriteByte('\'')
+			} else {
+				out.WriteByte('\\')
+				out.WriteByte(src[i])
+			}
+		default:
+			out.WriteByte(src[i])
+		}
+	}
+	return "", false
 }
 
 // candidateKind 按标签与 URL 后缀推断候选的默认扩展名。
