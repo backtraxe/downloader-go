@@ -140,6 +140,29 @@ bot 的 `getUpdates` 失败后会按 5、10、20、40、60 秒逐步退避，成
 pkg install yt-dlp ffmpeg libheif-progs
 ```
 
+## HEIC 转码诊断
+
+HEIC/AVIF 先用 `heif-convert` 转成完整 JPEG；如果仍超出 Telegram 限制，
+后续缩放/压缩只处理这份 JPEG，不再解码原始 HEIF。转换失败的图片会按文件
+发送并记录原因。
+
+需要排查转换内容时，可在启动前设置 `DOWNLOADER_KEEP_TRANSCODES=1`：
+
+```bash
+DOWNLOADER_KEEP_TRANSCODES=1 dl-go bot
+
+# 或单独上传文件
+DOWNLOADER_KEEP_TRANSCODES=1 dl-go --data-dir /path/to/data upload /path/to/image.heic
+```
+
+此时会保留转换后的 JPEG，日志会给出它的实际路径。默认不保留临时文件，
+避免占用空间。该开关只用于诊断，排查后请退出 bot、取消环境变量并删除
+产生的临时图片：
+
+```bash
+unset DOWNLOADER_KEEP_TRANSCODES
+```
+
 ## Release 平台
 
 | 平台 | 归档 |
