@@ -204,6 +204,8 @@ URL → sites.Detect → dispatch
 - bot：长轮询 `getUpdates`，启动时跳过积压；支持 `message` 与 `channel_post`；频道不做用户白名单。
 - 上传规划：
   - 图片（jpg/jpeg/png/webp）与视频（mp4/mov/webm/mkv）混排，每组 ≤10，发 `sendMediaGroup`；
+    按实际待上传文件总大小把每组限制在 49MiB 以内（转码后重新读取大小），
+    超出时保持顺序拆组，给 multipart 封装预留空间，避免整组上传触发 HTTP 413；
   - 照片 >10MB、尺寸和 >10000 或宽高比 >20：ffmpeg 缩放/压到 ≤10MB；失败
     降级 `sendDocument`（宽高比超限无法靠等比缩放修复时直接按文件发送）；
   - 图片格式按文件头识别，不信任扩展名：小红书等站点常把 WebP/HEIC 存成

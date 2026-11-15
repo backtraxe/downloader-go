@@ -11,8 +11,12 @@ import (
 	"github.com/backtraxe/downloader-go/internal/tgapi"
 )
 
-// albumSize 是 sendMediaGroup 单组上限。
-const albumSize = 10
+const (
+	// albumSize 是 sendMediaGroup 单组上限。
+	albumSize = 10
+	// albumPayloadBytes 限制单组媒体文件总大小，并为 multipart 封装预留 1MiB。
+	albumPayloadBytes = maxUploadBytes - 1<<20
+)
 
 // Uploader 把一次下载结果中的文件上传到 Telegram。
 //
@@ -77,6 +81,12 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 				}
 				continue
 			}
+			if prepared != path {
+				info, statErr = os.Stat(prepared)
+				if statErr != nil {
+					return sent, skipped, fmt.Errorf("telegram: stat %s: %w", prepared, statErr)
+				}
+			}
 			media = append(media, FileInfo{Path: prepared, Size: info.Size(), Kind: Photo})
 		case Video:
 			sendPath := path
@@ -106,10 +116,19 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 	}
 
 	for _, group := range PlanGroups(media, albumSize) {
-		if err := u.sendGroup(ctx, chatID, group, caption); err != nil {
-			return sent, skipped, err
+		for len(group) > 0 {
+			n := 1
+			payloadBytes := group[0].Size
+			for n < len(group) && payloadBytes+group[n].Size <= albumPayloadBytes {
+				payloadBytes += group[n].Size
+				n++
+			}
+			if err := u.sendGroup(ctx, chatID, group[:n], caption); err != nil {
+				return sent, skipped, err
+			}
+			sent += n
+			group = group[n:]
 		}
-		sent += len(group)
 	}
 
 	for _, path := range documents {
