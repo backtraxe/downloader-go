@@ -271,6 +271,10 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 			}
 		}
 	}
+	if b.Config.DeleteIncomingMessages {
+		// 与 bot 过程提示消息共用 TTL，但单独调度，确保用户原文也在其中。
+		b.scheduleDelete(ctx, chatID, msg.MessageID, b.Config.TTL())
+	}
 	return nil
 }
 
@@ -287,8 +291,17 @@ func (b *Bot) reply(ctx context.Context, chatID, text string) error {
 		return err
 	}
 	ttl := b.Config.TTL()
-	if ttl <= 0 || msg.MessageID == 0 {
-		return nil
+	if ttl > 0 {
+		b.scheduleDelete(ctx, chatID, msg.MessageID, ttl)
+	}
+	return nil
+}
+
+// scheduleDelete 按 TTL 异步删除一条过程消息或用户原文。
+// 删除失败只影响清理（尤其是群聊/频道权限），不改变下载上传结果。
+func (b *Bot) scheduleDelete(ctx context.Context, chatID string, messageID int64, ttl int) {
+	if ttl <= 0 || messageID == 0 {
+		return
 	}
 	after := b.AfterFunc
 	if after == nil {
@@ -297,12 +310,10 @@ func (b *Bot) reply(ctx context.Context, chatID, text string) error {
 	after(time.Duration(ttl)*time.Second, func() {
 		deleteCtx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		// 删除失败只影响清理（频道内可能没有删除权限），不改变处理结果。
-		if err := b.API.DeleteMessage(deleteCtx, chatID, msg.MessageID); err != nil {
-			slog.WarnContext(ctx, "删除过程消息失败", "error", err)
+		if err := b.API.DeleteMessage(deleteCtx, chatID, messageID); err != nil {
+			slog.WarnContext(ctx, "删除消息失败", "message_id", messageID, "error", err)
 		}
 	})
-	return nil
 }
 
 // allowed 判断用户是否在白名单中；名单为空时拒绝所有用户。

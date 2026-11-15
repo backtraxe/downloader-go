@@ -493,6 +493,35 @@ func TestHandleMessageSchedulesDeletionForTextOnly(t *testing.T) {
 	}
 }
 
+func TestHandleMessageDeletesIncomingWhenEnabled(t *testing.T) {
+	rec := &fakeTelegram{}
+	timers := &timerRecorder{}
+	bot := newFakeBot(t, rec, config.Telegram{
+		AllowedUsers:             []int64{1},
+		ProcessMessageTTLSeconds: intPtr(7),
+		DeleteIncomingMessages:   true,
+	}, func(context.Context, string, bool) result.Result {
+		return result.Result{Status: result.Downloaded,
+			Posts: []result.Post{{Files: []string{writeTempJPEG(t)}}},
+		}
+	})
+	bot.AfterFunc = timers.after
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "https://example.com/x")); err != nil {
+		t.Fatal(err)
+	}
+	delays := timers.recorded()
+	if len(delays) != 3 || delays[2] != 7*time.Second {
+		t.Fatalf("timers=%v want three 7s entries, incoming last", delays)
+	}
+
+	// 最后调度的是用户本次链接消息，不该删除 bot 的过程消息。
+	timers.run(len(delays) - 1)
+	if deleted := rec.deletedIDs(); len(deleted) != 1 || deleted[0] != 10 {
+		t.Fatalf("deleted=%v want only original message 10", deleted)
+	}
+}
+
 func TestHandleMessageDoesNotScheduleWhenTTLDisabled(t *testing.T) {
 	rec := &fakeTelegram{}
 	timers := &timerRecorder{}
