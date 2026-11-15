@@ -33,7 +33,8 @@ const template = `{
     "bot_token": "在此填入 @BotFather 给的 token",
     "chat_id": 0,
     "allowed_users": [],
-    "process_message_ttl_seconds": 10
+    "process_message_ttl_seconds": 10,
+    "delete_incoming_messages": false
   }
 }
 `
@@ -89,9 +90,12 @@ type Telegram struct {
 	// ProcessMessageTTLSeconds 为 nil 表示配置缺键，使用默认 10 秒；
 	// 指向 0 表示显式关闭过程提示消息的自动删除。
 	ProcessMessageTTLSeconds *int `json:"process_message_ttl_seconds"`
+	// DeleteIncomingMessages 为 true 时，按同一 TTL 删除用户本次链接消息。
+	// 缺省 false，避免误删聊天记录。删除权限不足时按告警降级，不改变处理结果。
+	DeleteIncomingMessages bool `json:"delete_incoming_messages"`
 }
 
-// TTL 返回过程提示消息的存活秒数：缺省 300，显式 0 返回 0。
+// TTL 返回过程提示消息的存活秒数：缺省 10，显式 0 返回 0。
 func (t Telegram) TTL() int {
 	if t.ProcessMessageTTLSeconds == nil {
 		return DefaultProcessMessageTTL

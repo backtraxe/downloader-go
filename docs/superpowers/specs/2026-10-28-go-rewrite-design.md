@@ -200,7 +200,7 @@ URL → sites.Detect → dispatch
 
 ### 5.6 Telegram
 
-- 配置沿用 `config.json` 的 `telegram` 段：`bot_token`、`chat_id`、`allowed_users`、`process_message_ttl_seconds`；旧 `telegram.json` 自动兜底。
+- 配置沿用 `config.json` 的 `telegram` 段：`bot_token`、`chat_id`、`allowed_users`、`process_message_ttl_seconds`、`delete_incoming_messages`；旧 `telegram.json` 自动兜底。
 - bot：长轮询 `getUpdates`，启动时跳过积压；支持 `message` 与 `channel_post`；频道不做用户白名单。
 - 上传规划：
   - 图片（jpg/jpeg/png/webp）与视频（mp4/mov/webm/mkv）混排，每组 ≤10，发 `sendMediaGroup`；
@@ -221,6 +221,9 @@ URL → sites.Detect → dispatch
   `uploader` 是可能缺失的显示名）；标签保留 Unicode 字母与数字，避免日文、
   韩文、西里尔文作者名被过滤后丢失标签。
 - 过程提示消息按 TTL 自动删除；媒体消息永不删除。
+- `delete_incoming_messages` 显式开启时，链接全部处理完后按同一 TTL 删除
+  用户原消息；默认关闭。没有链接或未授权消息不删除，群聊/频道权限不足
+  只告警，不影响下载上传结果。
 - 串行处理，一条消息内的多个链接顺序执行。
 
 ### 5.7 日志

@@ -99,9 +99,11 @@ bot 的 `getUpdates` 失败后会按 5、10、20、40、60 秒逐步退避，成
     "bot_token": "在此填入 @BotFather 给的 token",
     "chat_id": 0,
     "allowed_users": [],
-    "process_message_ttl_seconds": 10
+    "process_message_ttl_seconds": 10,
+    "delete_incoming_messages": false
   }
 }
+```
 ```
 
 - `bot_token`：向 @BotFather 申请，勿提交或分享给他人。
@@ -110,7 +112,11 @@ bot 的 `getUpdates` 失败后会按 5、10、20、40、60 秒逐步退避，成
 - `allowed_users`：允许使用机器人的用户数字 ID 数组，如 `[123456789]`；
   空数组表示拒绝所有私聊/群聊用户，频道帖子不受白名单限制。
 - `process_message_ttl_seconds`：机器人过程提示消息的自动删除时间，默认
-  `10` 秒；设为 `0` 关闭。不删除用户消息和相册、视频等媒体消息。
+  `10` 秒；设为 `0` 关闭。不删除相册、视频等媒体消息。
+- `delete_incoming_messages`：是否删除你发送的链接消息，默认 `false`。设为
+  `true` 时，所含链接全部处理完毕后，按同一个 TTL 异步删除用户原消息；
+  `/force` 消息同样支持。无链接或未授权消息不删除。群聊/频道需要 bot
+  有删除权限，权限不足时只记录日志，不影响下载上传。
 
 修改配置后需要重启 `bot`。兼容旧版 `telegram.json`：仅在 `config.json`
 不存在时读取，其内容是上述 `telegram` 段本身。

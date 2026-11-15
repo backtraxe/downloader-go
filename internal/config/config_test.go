@@ -20,6 +20,19 @@ func TestLoadWritesTemplateWhenMissing(t *testing.T) {
 	}
 }
 
+func TestDeleteIncomingMessagesConfig(t *testing.T) {
+	if (Telegram{}).DeleteIncomingMessages {
+		t.Fatal("deleting incoming messages must be opt-in")
+	}
+	var config Config
+	if err := json.Unmarshal([]byte(`{"telegram":{"delete_incoming_messages":true}}`), &config); err != nil {
+		t.Fatal(err)
+	}
+	if !config.Telegram.DeleteIncomingMessages {
+		t.Fatal("delete_incoming_messages was not decoded")
+	}
+}
+
 func TestLoadLegacyTelegram(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "telegram.json")
