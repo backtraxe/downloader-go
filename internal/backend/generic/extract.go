@@ -191,6 +191,15 @@ func extractEmbeddedAuthor(doc *goquery.Document) string {
 	return author
 }
 
+// extractDOMAuthor 从受限的用户信息节点取作者。只读取首个段落，避免把
+// 后续段落中的发布时间或设备名拼入作者。
+func extractDOMAuthor(doc *goquery.Document) string {
+	if doc == nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Find(".username-item").First().Find("p").First().Text())
+}
+
 // singleQuotedJSON 读取一个以单引号包裹的 JSON 字符串，保留合法 JSON
 // 转义，并把 JavaScript 的 \' 恢复成普通单引号。
 func singleQuotedJSON(src string) (string, bool) {

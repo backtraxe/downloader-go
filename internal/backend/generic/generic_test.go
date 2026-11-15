@@ -74,6 +74,39 @@ func TestExtractEmbeddedAuthor(t *testing.T) {
 	}
 }
 
+func TestExtractDOMAuthor(t *testing.T) {
+	if got := extractDOMAuthor(nil); got != "" {
+		t.Fatalf("nil document author=%q", got)
+	}
+	cases := []struct {
+		name string
+		html string
+		want string
+	}{
+		{
+			name: "coolapk user info",
+			html: `<div class="username-item" style="margin-left: 8px;">
+              <p style="color: #212121;"> 忘记密码是啥了 </p>
+              <p>2个星期前 <span>vivo X200 Ultra</span></p>
+            </div>`,
+			want: "忘记密码是啥了",
+		},
+		{name: "missing user info", html: `<p>正文</p>`},
+		{name: "blank first paragraph", html: `<div class="username-item"><p>  </p><p>其他信息</p></div>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := goquery.NewDocumentFromReader(strings.NewReader(tc.html))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := extractDOMAuthor(doc); got != tc.want {
+				t.Fatalf("author=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDownloadUsesEmbeddedAuthor(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/read.php", func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +132,69 @@ func TestDownloadUsesEmbeddedAuthor(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	if res.Posts[0].Author != "作者名称" {
+		t.Fatalf("author=%q", res.Posts[0].Author)
+	}
+}
+
+func TestDownloadUsesDOMAuthor(t *testing.T) {
+	img := pngBytes(t, 400, 400)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed/74731255", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>动态内容 来自 忘记密码是啥了 - 酷安</title></head><body>
+          <div class="username-item">
+            <p>忘记密码是啥了</p>
+            <p>2个星期前 <span>vivo X200 Ultra</span></p>
+          </div>
+          <div class="feed-message"><p>动态内容</p></div>
+          <img class="message-image" src="/message.png">
+          </body></html>`)
+	})
+	mux.HandleFunc("/message.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(img)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	d := &Downloader{
+		HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome133}),
+		DataDir: t.TempDir(),
+	}
+	res := d.Download(context.Background(), srv.URL+"/feed/74731255", false)
+	if res.Status != result.Downloaded || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if res.Posts[0].Author != "忘记密码是啥了" {
+		t.Fatalf("author=%q", res.Posts[0].Author)
+	}
+}
+
+func TestDownloadPrefersEmbeddedAuthorOverDOM(t *testing.T) {
+	img := pngBytes(t, 400, 400)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/read.php", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><title>画廊</title></head><body>
+          <script>var infotpc = '{"name":"内联作者"}';</script>
+          <div class="username-item"><p>DOM作者</p></div>
+          <img src="/image.png">
+          </body></html>`)
+	})
+	mux.HandleFunc("/image.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(img)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	d := &Downloader{
+		HTTP:    httpclient.New(httpclient.Options{Profile: httpclient.Chrome133}),
+		DataDir: t.TempDir(),
+	}
+	res := d.Download(context.Background(), srv.URL+"/read.php?tid=7283434", false)
+	if res.Status != result.Downloaded || len(res.Posts) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if res.Posts[0].Author != "内联作者" {
 		t.Fatalf("author=%q", res.Posts[0].Author)
 	}
 }

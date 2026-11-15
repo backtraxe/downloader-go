@@ -192,7 +192,8 @@ URL → sites.Detect → dispatch
 
 - goquery 扫描 `img/source/video` 的懒加载属性、`<a href>` 直链、行内 `background-image`。
 - 作者优先从内联 `var infotpc` JSON 对象的 `name` 提取，不执行脚本；
-  未识别时沿用标题中的“正文 来自 作者”规则。
+  未识别时取第一个 `.username-item` 的首个 `p`（覆盖酷安动态页，忽略后续的
+  发布时间与设备段落），仍为空时沿用标题中的“正文 来自 作者”规则。
 - 排除伪媒体链接（如 MediaWiki 文件页）。
 - 下载前按文件名关键词过滤装饰图；落盘后按短边 <300px 过滤（Go `image.DecodeConfig`，webp 用 `x/image/webp`；无法解码时回落 20KB 体积阈值）。
 - 总并发 5，同一 host 最多 2 路握手。

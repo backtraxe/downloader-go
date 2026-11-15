@@ -86,6 +86,9 @@ func (d *Downloader) Download(ctx context.Context, rawURL string, force bool) re
 	title := ExtractTitle(doc)
 	author := extractEmbeddedAuthor(doc)
 	if author == "" {
+		author = extractDOMAuthor(doc)
+	}
+	if author == "" {
 		author = ExtractAuthor(rawTitle, site)
 	}
 
