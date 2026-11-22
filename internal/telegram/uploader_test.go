@@ -158,6 +158,63 @@ func TestSendGroupsAlbumsAndSkipsOversizedVideo(t *testing.T) {
 	}
 }
 
+func TestSendWithOptionsCaptionPosition(t *testing.T) {
+	const wantCaption = "#甲 #douyin\n标题"
+	tests := []struct {
+		name         string
+		fileCount    int
+		captionIndex int
+		wantSizes    []int
+		wantCaptions []int
+	}{
+		{name: "second", fileCount: 2, captionIndex: 2, wantSizes: []int{2}, wantCaptions: []int{1}},
+		{name: "zero clamps to first", fileCount: 2, captionIndex: 0, wantSizes: []int{2}, wantCaptions: []int{0}},
+		{name: "negative clamps to first", fileCount: 2, captionIndex: -3, wantSizes: []int{2}, wantCaptions: []int{0}},
+		{name: "too large clamps to last", fileCount: 2, captionIndex: 99, wantSizes: []int{2}, wantCaptions: []int{1}},
+		{name: "index reused across groups", fileCount: 12, captionIndex: 5, wantSizes: []int{10, 2}, wantCaptions: []int{4, 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := make([]string, 0, tt.fileCount)
+			for i := 0; i < tt.fileCount; i++ {
+				path := filepath.Join(dir, fmt.Sprintf("p%02d.jpg", i))
+				writeTestJPEG(t, path, 10, 10)
+				files = append(files, path)
+			}
+
+			rec := &uploadRecorder{}
+			srv := httptest.NewServer(http.HandlerFunc(rec.handler))
+			defer srv.Close()
+			u := &Uploader{API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}}
+			sent, skipped, err := u.SendWithOptions(context.Background(), "123", result.Post{
+				Site: "douyin", Author: "甲", Title: "标题", Files: files,
+			}, SendOptions{CaptionIndex: tt.captionIndex})
+			if err != nil || sent != tt.fileCount || len(skipped) != 0 {
+				t.Fatalf("sent=%d skipped=%v err=%v", sent, skipped, err)
+			}
+			if len(rec.albums) != len(tt.wantSizes) {
+				t.Fatalf("albums=%d want %d", len(rec.albums), len(tt.wantSizes))
+			}
+			for groupIndex, album := range rec.albums {
+				if len(album) != tt.wantSizes[groupIndex] {
+					t.Fatalf("album %d size=%d want %d", groupIndex, len(album), tt.wantSizes[groupIndex])
+				}
+				for itemIndex, item := range album {
+					want := ""
+					if itemIndex == tt.wantCaptions[groupIndex] {
+						want = wantCaption
+					}
+					if item.Caption != want {
+						t.Errorf("album %d item %d caption=%q want %q", groupIndex, itemIndex, item.Caption, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestSendSinglePhotoUsesSendPhoto(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "one.jpg")
@@ -251,6 +308,63 @@ func TestSendAlbumFallsBackToSinglesAndDocument(t *testing.T) {
 	}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("paths=%v want %v", paths, want)
+	}
+}
+
+func TestSendWithOptionsAlbumFallsBackToSinglesAndDocument(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.jpg")
+	b := filepath.Join(dir, "b.jpg")
+	writeTestJPEG(t, a, 10, 10)
+	writeTestJPEG(t, b, 10, 10)
+
+	rec := &uploadRecorder{}
+	photoCalls := 0
+	fail := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":          false,
+			"error_code":  400,
+			"description": `Bad Request: failed to send message #2 with the error message "IMAGE_PROCESS_FAILED"`,
+		})
+	}
+	handler := func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/sendMediaGroup"):
+			fail(w)
+		case strings.HasSuffix(req.URL.Path, "/sendPhoto"):
+			photoCalls++
+			if photoCalls == 2 {
+				fail(w)
+				return
+			}
+			rec.handler(w, req)
+		case strings.HasSuffix(req.URL.Path, "/sendDocument"):
+			rec.handler(w, req)
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	u := &Uploader{API: &tgapi.Client{Token: "test", BaseURL: srv.URL, HTTP: srv.Client()}}
+	sent, skipped, err := u.SendWithOptions(context.Background(), "123", result.Post{
+		Site: "xiaohongshu", Author: "甲", Title: "标题", Files: []string{a, b},
+	}, SendOptions{CaptionIndex: 2})
+	if err != nil || sent != 2 || len(skipped) != 0 {
+		t.Fatalf("sent=%d skipped=%v err=%v", sent, skipped, err)
+	}
+	if photoCalls != 2 {
+		t.Fatalf("photo calls=%d want 2", photoCalls)
+	}
+	wantCaption := "#甲 #xiaohongshu\n标题"
+	if len(rec.singles) != 1 || rec.singles[0] != "" {
+		t.Errorf("single captions=%v want one empty caption", rec.singles)
+	}
+	if len(rec.documents) != 1 || rec.documents[0] != wantCaption {
+		t.Errorf("document captions=%v want [%q]", rec.documents, wantCaption)
 	}
 }
 

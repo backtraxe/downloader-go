@@ -2,9 +2,11 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/result"
@@ -34,13 +36,24 @@ type Uploader struct {
 	KeepGenerated bool
 }
 
-// Send 上传 post.Files 并返回成功文件数与被跳过的本地路径。
+// SendOptions 控制单次上传行为。
+type SendOptions struct {
+	// CaptionIndex 是相册每项分组内 caption 的 1 起始位置；默认或越界时钳制到有效位置。
+	CaptionIndex int
+}
+
+// Send 上传 post.Files，并保留每组首项带 caption 的默认行为。
+func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (sent int, skipped []string, err error) {
+	return u.SendWithOptions(ctx, chatID, post, SendOptions{})
+}
+
+// SendWithOptions 上传 post.Files 并返回成功文件数与被跳过的本地路径。
 //
 // 照片先经 PreparePhoto：需转码且成功的进相册，失败的原样按 document
 // 发送。视频超过 50MB 时尝试压到约 49MB，压缩失败或仍超限则加入
-// skipped。其余文件逐个按 document 发送。相册每组的首项带
-// BuildCaption 生成的说明。
-func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (sent int, skipped []string, err error) {
+// skipped。其余文件逐个按 document 发送。相册每组由 CaptionIndex 指定的
+// 一项带 BuildCaption 生成的说明。
+func (u *Uploader) SendWithOptions(ctx context.Context, chatID string, post result.Post, opts SendOptions) (sent int, skipped []string, err error) {
 	skipped = []string{}
 	if u.API == nil {
 		return 0, skipped, errors.New("telegram: nil API client")
@@ -123,7 +136,7 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 				payloadBytes += group[n].Size
 				n++
 			}
-			if err := u.sendGroup(ctx, chatID, group[:n], caption); err != nil {
+			if err := u.sendGroup(ctx, chatID, group[:n], caption, captionPosition(n, opts.CaptionIndex)); err != nil {
 				return sent, skipped, err
 			}
 			sent += n
@@ -145,25 +158,49 @@ func (u *Uploader) Send(ctx context.Context, chatID string, post result.Post) (s
 	return sent, skipped, nil
 }
 
+// captionPosition 将 1 起始的 caption 位置钳制到分组内并返回 0 起始下标。
+func captionPosition(groupSize, requested int) int {
+	if groupSize <= 0 || requested <= 1 {
+		return 0
+	}
+	if requested > groupSize {
+		return groupSize - 1
+	}
+	return requested - 1
+}
+
 // sendGroup 发送一个相册分组。
 //
 // 单项由 sendSingle 直接发送。多项走 sendMediaGroup；相册对图片格式的
 // 处理比单张更严格，整组失败且原因是图片处理时，逐项重发，避免一张坏图
-// 中断整批。逐项发送时仍保留首项 caption。
-func (u *Uploader) sendGroup(ctx context.Context, chatID string, group []FileInfo, caption string) error {
+// 中断整批。逐项发送时仍由 captionIndex 选择携带 caption 的一项。
+func (u *Uploader) sendGroup(ctx context.Context, chatID string, group []FileInfo, caption string, captionIndex int) error {
 	if len(group) == 1 {
 		return u.sendSingle(ctx, chatID, group[0], caption)
 	}
 
-	items := make([]tgapi.Media, 0, len(group))
+	items := make([]map[string]string, 0, len(group))
+	files := make(map[string]string, len(group))
 	for i, file := range group {
-		item := tgapi.Media{Kind: kindName(file.Kind), Path: file.Path}
-		if i == 0 {
-			item.Caption = caption
+		attach := "file" + strconv.Itoa(i)
+		item := map[string]string{
+			"type":  kindName(file.Kind),
+			"media": "attach://" + attach,
+		}
+		if i == captionIndex && caption != "" {
+			item["caption"] = caption
 		}
 		items = append(items, item)
+		files[attach] = file.Path
 	}
-	_, err := u.API.SendMediaGroup(ctx, chatID, items)
+	mediaJSON, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("telegram sendMediaGroup: encode media: %w", err)
+	}
+	_, err = u.API.CallMultipart(ctx, "sendMediaGroup", map[string]string{
+		"chat_id": chatID,
+		"media":   string(mediaJSON),
+	}, files)
 	if err == nil {
 		return nil
 	}
@@ -172,7 +209,7 @@ func (u *Uploader) sendGroup(ctx context.Context, chatID string, group []FileInf
 	}
 	for i, file := range group {
 		itemCaption := ""
-		if i == 0 {
+		if i == captionIndex {
 			itemCaption = caption
 		}
 		if err := u.sendSingle(ctx, chatID, file, itemCaption); err != nil {
