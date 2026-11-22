@@ -23,11 +23,11 @@ func TestMakeTagEdgeCases(t *testing.T) {
 		"a__b":      "#a__b",
 		" a  b ":    "#a_b",
 		"标题 123_x":  "#标题_123_x",
-		"emoji 😀 x": "#emoji_😀_x",
+		"emoji 😀 x": "#emoji_emoji_1f600_x",
 		"こんにちは":     "#こんにちは",
 		"안녕하세요":     "#안녕하세요",
 		"Иван":      "#Иван",
-		"😀":         "#😀",
+		"😀":         "#emoji_1f600",
 	}
 	for in, want := range cases {
 		if got := MakeTag(in); got != want {
@@ -36,15 +36,17 @@ func TestMakeTagEdgeCases(t *testing.T) {
 	}
 }
 
-func TestMakeTagPreservesEmojiSequences(t *testing.T) {
+func TestMakeTagEncodesEmojiOnly(t *testing.T) {
 	cases := map[string]string{
-		"😀":     "#😀",
-		"小明😀":   "#小明😀",
-		"👩‍💻":   "#👩‍💻",
-		"🧑🏽‍🚀":  "#🧑🏽‍🚀",
-		"1️⃣":   "#1️⃣",
-		"🇨🇳":    "#🇨🇳",
-		"a/b 😀": "#a_b_😀",
+		"😀":     "#emoji_1f600",
+		"小明😀":   "#小明emoji_1f600",
+		"小😀明":   "#小emoji_1f600_明",
+		"a😀b":   "#aemoji_1f600_b",
+		"👩‍💻":   "#emoji_1f469_200d_1f4bb",
+		"🧑🏽‍🚀":  "#emoji_1f9d1_1f3fd_200d_1f680",
+		"1️⃣":   "#1emoji_fe0f_20e3",
+		"🇨🇳":    "#emoji_1f1e8_1f1f3",
+		"a/b 😀": "#a_b_emoji_1f600",
 	}
 	for input, want := range cases {
 		if got := MakeTag(input); got != want {
@@ -54,8 +56,18 @@ func TestMakeTagPreservesEmojiSequences(t *testing.T) {
 }
 
 func TestBuildCaptionPreservesEmojiAuthor(t *testing.T) {
-	if got := BuildCaption("xiaohongshu", "😀", "标题"); got != "#😀 #xiaohongshu\n标题" {
-		t.Fatalf("caption=%q", got)
+	cases := []struct {
+		author string
+		want   string
+	}{
+		{"😀", "#emoji_1f600 #xiaohongshu\n作者：😀\n标题"},
+		{"小明😀", "#小明emoji_1f600 #xiaohongshu\n作者：小明😀\n标题"},
+		{"小明", "#小明 #xiaohongshu\n标题"},
+	}
+	for _, tc := range cases {
+		if got := BuildCaption("xiaohongshu", tc.author, "标题"); got != tc.want {
+			t.Errorf("author=%q caption=%q want %q", tc.author, got, tc.want)
+		}
 	}
 }
 

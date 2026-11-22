@@ -8,6 +8,7 @@ package telegram
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -48,23 +49,42 @@ func Classify(path string) FileKind {
 
 // MakeTag 把文本转换成 Telegram 话题标签。
 //
-// 保留 Unicode 字母、数字、下划线与 emoji（包括组合 emoji 所需字符，
-// 覆盖中文、日文假名、韩文、西里尔文等作者名），其余连续字符折叠为一个
-// 下划线，去掉首尾下划线后加 #。
-// 结果为空时返回空串，调用方据此省略该标签。
+// 普通文字、数字与下划线保留；其他普通标点折叠为一个下划线。emoji 部分
+// 转为 emoji_<码点>，组合表情的每个码点也参与编码，避免把原始表情直接
+// 当作可搜索标签。结果为空时返回空串，调用方据此省略该标签。
 func MakeTag(text string) string {
 	var b strings.Builder
+	inEmoji := false
 	inSeparator := false
 	for _, r := range text {
-		if isTagRune(r) {
+		if isEmojiRune(r) || inEmoji && (unicode.IsMark(r) || r == '‍' || r >= 0xe0000 && r <= 0xe007f) {
+			if !inEmoji {
+				if inSeparator {
+					_ = b.WriteByte('_')
+				}
+				_, _ = b.WriteString("emoji_")
+				inEmoji = true
+			} else {
+				_ = b.WriteByte('_')
+			}
+			_, _ = b.WriteString(strconv.FormatInt(int64(r), 16))
+			inSeparator = false
+			continue
+		}
+		valid := isTagRune(r)
+		if inEmoji && valid {
+			_ = b.WriteByte('_')
+		}
+		inEmoji = false
+		if valid {
+			if inSeparator {
+				_ = b.WriteByte('_')
+			}
 			_, _ = b.WriteRune(r)
 			inSeparator = false
 			continue
 		}
-		if b.Len() > 0 && !inSeparator {
-			_ = b.WriteByte('_')
-			inSeparator = true
-		}
+		inSeparator = b.Len() > 0
 	}
 	tag := strings.Trim(b.String(), "_")
 	if tag == "" {
@@ -73,24 +93,22 @@ func MakeTag(text string) string {
 	return "#" + tag
 }
 
-// isTagRune 判断 r 是否允许出现在标签中。
-//
-// 保留 Unicode 字母、数字、emoji 和组合字符。ZWJ 与 emoji tag 序列也要保留，
-// 否则一个完整表情可能被过滤或插入下划线，破坏作者名的原貌。
+// isTagRune 判断 r 是否为标签中的普通文本字符。
 func isTagRune(r rune) bool {
-	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSymbol(r) || unicode.IsMark(r) {
-		return true
-	}
-	return r == '‍' || r >= 0xe0000 && r <= 0xe007f
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
+}
+
+// isEmojiRune 识别 emoji 与其他图形符号。变体选择符单独出现时也编码。
+func isEmojiRune(r rune) bool {
+	return unicode.IsSymbol(r) || r >= 0xfe00 && r <= 0xfe0f
 }
 
 // maxCaptionRunes 是 Telegram caption 的字符上限（按 rune 计）。
 const maxCaptionRunes = 1024
 
-// BuildCaption 生成媒体说明：先 #作者 #站点，再换行接标题。
-//
-// 空标签省略；没有任何标签时只返回标题，避免出现前导换行。结果超过
-// Telegram 的 1024 字符上限时按 rune 边界截断，不会切坏 UTF-8。
+// BuildCaption 生成媒体说明：先 #作者 #站点，含 emoji 时另起一行保留原昵称，
+// 最后换行接标题。空标签省略；没有任何标签时只返回标题，避免出现前导换行。
+// 结果超过 Telegram 的 1024 字符上限时按 rune 边界截断，不会切坏 UTF-8。
 func BuildCaption(site, author, title string) string {
 	tags := make([]string, 0, 2)
 	if tag := MakeTag(author); tag != "" {
@@ -100,16 +118,18 @@ func BuildCaption(site, author, title string) string {
 		tags = append(tags, tag)
 	}
 
-	caption := title
+	lines := make([]string, 0, 3)
 	if len(tags) > 0 {
-		joined := strings.Join(tags, " ")
-		if title == "" {
-			caption = joined
-		} else {
-			caption = joined + "\n" + title
-		}
+		lines = append(lines, strings.Join(tags, " "))
 	}
-	return truncateCaption(caption)
+	author = strings.TrimSpace(author)
+	if author != "" && strings.IndexFunc(author, isEmojiRune) >= 0 {
+		lines = append(lines, "作者："+author)
+	}
+	if title != "" {
+		lines = append(lines, title)
+	}
+	return truncateCaption(strings.Join(lines, "\n"))
 }
 
 // truncateCaption 按 rune 边界把 caption 截到 maxCaptionRunes。
