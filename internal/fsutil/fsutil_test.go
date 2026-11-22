@@ -67,6 +67,20 @@ func TestBuildDownloadDir(t *testing.T) {
 	}
 }
 
+func TestBuildDownloadDirPreservesEmojiAuthor(t *testing.T) {
+	got := BuildDownloadDir("data", "xiaohongshu", "标题", "小明😀")
+	want := filepath.Join("data", "xiaohongshu", "小明😀", "标题")
+	if got != want {
+		t.Fatalf("%q want %q", got, want)
+	}
+
+	got = BuildDownloadDir("data", "xiaohongshu", "标题", "👩‍💻")
+	want = filepath.Join("data", "xiaohongshu", "👩‍💻", "标题")
+	if got != want {
+		t.Fatalf("%q want %q", got, want)
+	}
+}
+
 func TestBuildDownloadDirSanitizes(t *testing.T) {
 	got := BuildDownloadDir("data", "site", "a/b:c", "x/y")
 	want := filepath.Join("data", "site", "xy", "abc")

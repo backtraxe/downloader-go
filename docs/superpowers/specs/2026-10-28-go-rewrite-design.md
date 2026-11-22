@@ -224,9 +224,9 @@ URL → sites.Detect → dispatch
 - caption：`#作者 #站点` + 标题；默认相册只在第一项带 caption。单次命令指定的
   位置复用于消息中的每个链接及每个相册分组，不保存聊天偏好；`N <= 0` 钳制为
   第一项，超过当前组长度时钳制为该组最后一项。作者名优先取 yt-dlp 的
-  `uploader`，为空时回退 `channel`/`uploader_id`（Instagram 的 `uploader` 是
-  可能缺失的显示名）；标签保留 Unicode 字母与数字，避免日文、韩文、西里尔文
-  作者名被过滤后丢失标签。
+  可能缺失的显示名）；标签保留 Unicode 字母、数字与 emoji（含 ZWJ、变体选择符、
+  肤色修饰符等组合字符），使纯 emoji 或混合 emoji 的作者名不丢失；作者目录同样
+  保留 emoji。emoji 标签能否作为 Telegram 话题搜索，取决于客户端支持。
 - 过程提示消息按 TTL 自动删除；媒体消息永不删除。
 - `delete_incoming_messages` 显式开启时，链接全部处理完后按同一 TTL 删除
   用户原消息；默认关闭。没有链接或未授权消息不删除，群聊/频道权限不足

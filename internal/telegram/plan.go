@@ -48,8 +48,9 @@ func Classify(path string) FileKind {
 
 // MakeTag 把文本转换成 Telegram 话题标签。
 //
-// 保留 Unicode 字母、数字与下划线（覆盖中文、日文假名、韩文、西里尔文
-// 等作者名），其余连续字符折叠为一个下划线，去掉首尾下划线后加 #。
+// 保留 Unicode 字母、数字、下划线与 emoji（包括组合 emoji 所需字符，
+// 覆盖中文、日文假名、韩文、西里尔文等作者名），其余连续字符折叠为一个
+// 下划线，去掉首尾下划线后加 #。
 // 结果为空时返回空串，调用方据此省略该标签。
 func MakeTag(text string) string {
 	var b strings.Builder
@@ -74,10 +75,13 @@ func MakeTag(text string) string {
 
 // isTagRune 判断 r 是否允许出现在标签中。
 //
-// 用 Unicode 字母/数字而不是固定区间，避免日文假名、韩文、西里尔文等
-// 作者名被整体过滤后丢失 #作者 标签。
+// 保留 Unicode 字母、数字、emoji 和组合字符。ZWJ 与 emoji tag 序列也要保留，
+// 否则一个完整表情可能被过滤或插入下划线，破坏作者名的原貌。
 func isTagRune(r rune) bool {
-	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+	if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSymbol(r) || unicode.IsMark(r) {
+		return true
+	}
+	return r == '‍' || r >= 0xe0000 && r <= 0xe007f
 }
 
 // maxCaptionRunes 是 Telegram caption 的字符上限（按 rune 计）。

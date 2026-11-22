@@ -23,16 +23,39 @@ func TestMakeTagEdgeCases(t *testing.T) {
 		"a__b":      "#a__b",
 		" a  b ":    "#a_b",
 		"标题 123_x":  "#标题_123_x",
-		"emoji 😀 x": "#emoji_x",
+		"emoji 😀 x": "#emoji_😀_x",
 		"こんにちは":     "#こんにちは",
 		"안녕하세요":     "#안녕하세요",
 		"Иван":      "#Иван",
-		"😀":         "",
+		"😀":         "#😀",
 	}
 	for in, want := range cases {
 		if got := MakeTag(in); got != want {
 			t.Errorf("MakeTag(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestMakeTagPreservesEmojiSequences(t *testing.T) {
+	cases := map[string]string{
+		"😀":     "#😀",
+		"小明😀":   "#小明😀",
+		"👩‍💻":   "#👩‍💻",
+		"🧑🏽‍🚀":  "#🧑🏽‍🚀",
+		"1️⃣":   "#1️⃣",
+		"🇨🇳":    "#🇨🇳",
+		"a/b 😀": "#a_b_😀",
+	}
+	for input, want := range cases {
+		if got := MakeTag(input); got != want {
+			t.Errorf("MakeTag(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestBuildCaptionPreservesEmojiAuthor(t *testing.T) {
+	if got := BuildCaption("xiaohongshu", "😀", "标题"); got != "#😀 #xiaohongshu\n标题" {
+		t.Fatalf("caption=%q", got)
 	}
 }
 
