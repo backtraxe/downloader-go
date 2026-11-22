@@ -400,6 +400,61 @@ func TestDeleteMessage(t *testing.T) {
 	}
 }
 
+func TestSendMediaGroupUsesCaptionOnSelectedItem(t *testing.T) {
+	dir := t.TempDir()
+	photo := filepath.Join(dir, "a.jpg")
+	video := filepath.Join(dir, "b.mp4")
+	if err := os.WriteFile(photo, []byte("PIC"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(video, []byte("VID"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const selectedCaption = "caption at index 1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			return
+		}
+		var items []struct {
+			Caption *string `json:"caption"`
+		}
+		if err := json.Unmarshal([]byte(r.FormValue("media")), &items); err != nil {
+			t.Errorf("media json: %v", err)
+			return
+		}
+		if len(items) != 2 {
+			t.Errorf("items=%d", len(items))
+			return
+		}
+		if items[0].Caption != nil {
+			t.Errorf("item0 caption=%q, want omitted", *items[0].Caption)
+		}
+		if items[1].Caption == nil || *items[1].Caption != selectedCaption {
+			t.Errorf("item1 caption=%v, want %q", items[1].Caption, selectedCaption)
+		}
+		w.Write([]byte(`{"ok":true,"result":[
+			{"message_id":21,"chat":{"id":-100,"type":"channel"}},
+			{"message_id":22,"chat":{"id":-100,"type":"channel"},"caption":"caption at index 1"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := New("T")
+	c.BaseURL = srv.URL
+	msgs, err := c.SendMediaGroup(context.Background(), "-100", []Media{
+		{Kind: "photo", Path: photo},
+		{Kind: "video", Path: video, Caption: selectedCaption},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].MessageID != 21 || msgs[1].MessageID != 22 || msgs[1].Caption != selectedCaption {
+		t.Fatalf("msgs=%+v", msgs)
+	}
+}
+
 func TestSendMediaGroupShapeAndFiles(t *testing.T) {
 	dir := t.TempDir()
 	photo := filepath.Join(dir, "a.jpg")

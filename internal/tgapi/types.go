@@ -33,7 +33,7 @@ type Update struct {
 }
 
 // Media 描述 sendMediaGroup 中的一个媒体项。Kind 取 photo、video 或
-// document；Path 是本地文件路径；Caption 仅第一项生效。
+// document；Path 是本地文件路径；非空 Caption 写入对应媒体项。
 type Media struct {
 	Kind    string
 	Path    string

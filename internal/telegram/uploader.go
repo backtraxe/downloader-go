@@ -2,11 +2,9 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/backtraxe/downloader-go/internal/result"
@@ -179,28 +177,15 @@ func (u *Uploader) sendGroup(ctx context.Context, chatID string, group []FileInf
 		return u.sendSingle(ctx, chatID, group[0], caption)
 	}
 
-	items := make([]map[string]string, 0, len(group))
-	files := make(map[string]string, len(group))
+	items := make([]tgapi.Media, 0, len(group))
 	for i, file := range group {
-		attach := "file" + strconv.Itoa(i)
-		item := map[string]string{
-			"type":  kindName(file.Kind),
-			"media": "attach://" + attach,
-		}
+		item := tgapi.Media{Kind: kindName(file.Kind), Path: file.Path}
 		if i == captionIndex && caption != "" {
-			item["caption"] = caption
+			item.Caption = caption
 		}
 		items = append(items, item)
-		files[attach] = file.Path
 	}
-	mediaJSON, err := json.Marshal(items)
-	if err != nil {
-		return fmt.Errorf("telegram sendMediaGroup: encode media: %w", err)
-	}
-	_, err = u.API.CallMultipart(ctx, "sendMediaGroup", map[string]string{
-		"chat_id": chatID,
-		"media":   string(mediaJSON),
-	}, files)
+	_, err := u.API.SendMediaGroup(ctx, chatID, items)
 	if err == nil {
 		return nil
 	}

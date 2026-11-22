@@ -230,8 +230,8 @@ func (c *Client) DeleteMessage(ctx context.Context, chatID string, messageID int
 	return err
 }
 
-// SendMediaGroup 以媒体组（相册）发送多个媒体。第一项的 Caption 作为
-// 整组说明；空 Caption 不写入 media JSON。返回服务端创建的若干消息。
+// SendMediaGroup 以媒体组（相册）发送多个媒体。各项的非空 Caption 写入
+// 对应 media JSON；空 Caption 不写入。返回服务端创建的若干消息。
 func (c *Client) SendMediaGroup(ctx context.Context, chatID string, media []Media) ([]Message, error) {
 	type mediaItem struct {
 		Type    string `json:"type"`
@@ -242,10 +242,7 @@ func (c *Client) SendMediaGroup(ctx context.Context, chatID string, media []Medi
 	files := make(map[string]string, len(media))
 	for i, m := range media {
 		attach := "file" + strconv.Itoa(i)
-		item := mediaItem{Type: m.Kind, Media: "attach://" + attach}
-		if i == 0 {
-			item.Caption = m.Caption
-		}
+		item := mediaItem{Type: m.Kind, Media: "attach://" + attach, Caption: m.Caption}
 		items = append(items, item)
 		files[attach] = m.Path
 	}
