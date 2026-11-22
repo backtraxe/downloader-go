@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,9 +33,11 @@ const (
 	requestTimeout = 60 * time.Second
 
 	// helpText 是 /start 与 /help 的回复。
-	helpText = "发链接即可：小红书 / 抖音图文或视频 / bilibili / youtube / instagram / x / 任意网页。产物会以相册或视频回传，caption 带 #作者 标签方便搜索。\n/force <链接> 强制重下并回传。"
+	helpText = "发链接即可：小红书 / 抖音图文或视频 / bilibili / youtube / instagram / x / 任意网页。产物会以相册或视频回传，caption 带 #作者 标签方便搜索。\n/caption N <链接> 指定每组 caption 位置。\n/force [N] <链接> 强制重下并回传，可选指定 caption 位置。"
 	// noURLText 是消息中没有链接时的回复。
 	noURLText = "没识别到链接，直接发链接（可带分享文案）即可。"
+	// captionUsageText 是非法 /caption 命令的用法提示。
+	captionUsageText = "用法：/caption N <链接>"
 	// skippedText 是内容此前已下载过时的回复。
 	skippedText = "没有新产物——该内容此前已下载过"
 	// noNewFilesText 是下载状态成功但没有产物时的回复。
@@ -147,6 +150,41 @@ func (b *Bot) initialOffset(ctx context.Context) (int64, error) {
 	return offset, nil
 }
 
+// parseShareCommand 解析消息首字段中的单次下载命令，并返回剩余分享文案。
+func parseShareCommand(text string) (remaining string, force bool, captionIndex int, valid bool) {
+	captionIndex = 1
+	valid = true
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return text, false, captionIndex, true
+	}
+	if fields[0] == "/force" {
+		remainingFields := fields[1:]
+		if len(remainingFields) > 0 {
+			if index, err := strconv.Atoi(remainingFields[0]); err == nil {
+				captionIndex = index
+				remainingFields = remainingFields[1:]
+			}
+		}
+		return strings.Join(remainingFields, " "), true, captionIndex, true
+	}
+	if fields[0] != "/caption" {
+		return text, false, captionIndex, true
+	}
+	if len(fields) < 2 {
+		return "", false, captionIndex, false
+	}
+	index, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return "", false, captionIndex, false
+	}
+	remaining = strings.Join(fields[2:], " ")
+	if len(urlutil.ExtractURLs(remaining)) == 0 {
+		return "", false, captionIndex, false
+	}
+	return remaining, false, index, true
+}
+
 // HandleMessage 处理一条私聊/群聊消息或频道帖子。
 func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 	chatID := msg.Chat.ID.String()
@@ -163,13 +201,12 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 		return nil
 	}
 
-	// 仅识别独立的 /force 前缀；/forceable 仍按普通链接消息处理。
-	// 剥离前缀后，剩余分享文案里的链接统一强制重下并回传。
-	force := false
-	if fields := strings.Fields(text); len(fields) > 0 && fields[0] == "/force" {
-		force = true
-		text = strings.TrimSpace(strings.TrimPrefix(text, "/force"))
+	// 仅识别独立的首字段命令；/forceable 和 /captionable 仍按普通链接消息处理。
+	remaining, force, captionIndex, valid := parseShareCommand(text)
+	if !valid {
+		return b.reply(ctx, chatID, captionUsageText)
 	}
+	text = remaining
 
 	urls := urlutil.ExtractURLs(text)
 	if len(urls) == 0 {
@@ -226,7 +263,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg tgapi.Message) error {
 		var skippedPaths []string
 		uploadStarted := time.Now()
 		for _, post := range res.Posts {
-			n, skippedFiles, err := b.Uploader.Send(reqCtx, chatID, post)
+			n, skippedFiles, err := b.Uploader.SendWithOptions(reqCtx, chatID, post, SendOptions{CaptionIndex: captionIndex})
 			sent += n
 			skippedPaths = append(skippedPaths, skippedFiles...)
 			if err != nil {

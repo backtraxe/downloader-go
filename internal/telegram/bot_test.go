@@ -289,6 +289,120 @@ func TestHandleMessageSkippedAndFailed(t *testing.T) {
 	})
 }
 
+func TestCaptionCommandUploadsAtRequestedPosition(t *testing.T) {
+	photos := []string{writeTempJPEG(t), writeTempJPEG(t)}
+	var dispatched []string
+	var forced []bool
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(_ context.Context, url string, force bool) result.Result {
+		dispatched = append(dispatched, url)
+		forced = append(forced, force)
+		return result.Result{Status: result.Downloaded, Posts: []result.Post{{Title: "标题", Files: photos}}}
+	})
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "/caption 2 https://example.com/a")); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != "https://example.com/a" {
+		t.Fatalf("dispatched=%v", dispatched)
+	}
+	if len(forced) != 1 || forced[0] {
+		t.Fatalf("forced=%v", forced)
+	}
+	if len(rec.groups) != 1 || len(rec.groups[0]) != 2 {
+		t.Fatalf("groups=%+v", rec.groups)
+	}
+	if got := rec.groups[0][0].Caption; got != "" {
+		t.Fatalf("first caption=%q want empty", got)
+	}
+	if got := rec.groups[0][1].Caption; got != "标题" {
+		t.Fatalf("second caption=%q want 标题", got)
+	}
+}
+
+func TestCaptionCommandAppliesPositionToAllLinks(t *testing.T) {
+	photos := []string{writeTempJPEG(t), writeTempJPEG(t)}
+	type call struct {
+		url   string
+		force bool
+	}
+	var calls []call
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(_ context.Context, url string, force bool) result.Result {
+		calls = append(calls, call{url: url, force: force})
+		return result.Result{Status: result.Downloaded, Posts: []result.Post{{Title: "标题", Files: photos}}}
+	})
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "/caption 2 https://example.com/a https://example.com/b")); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0] != (call{url: "https://example.com/a"}) || calls[1] != (call{url: "https://example.com/b"}) {
+		t.Fatalf("calls=%+v", calls)
+	}
+	if len(rec.groups) != 2 {
+		t.Fatalf("groups=%+v", rec.groups)
+	}
+	for i, group := range rec.groups {
+		if len(group) != 2 || group[0].Caption != "" || group[1].Caption != "标题" {
+			t.Fatalf("group %d captions=%+v", i, group)
+		}
+	}
+}
+
+func TestCaptionCommandRejectsInvalidInput(t *testing.T) {
+	for _, text := range []string{"/caption", "/caption x https://example.com/a", "/caption 2"} {
+		t.Run(text, func(t *testing.T) {
+			rec := &fakeTelegram{}
+			calls := 0
+			bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(context.Context, string, bool) result.Result {
+				calls++
+				return result.Result{}
+			})
+			if err := bot.HandleMessage(context.Background(), message("10", "private", 1, text)); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 0 {
+				t.Fatalf("dispatch calls=%d want 0", calls)
+			}
+			replies := rec.replies()
+			if len(replies) != 1 || replies[0] != captionUsageText {
+				t.Fatalf("replies=%v", replies)
+			}
+		})
+	}
+}
+
+func TestForceCaptionCommandUploadsAtRequestedPosition(t *testing.T) {
+	photos := []string{writeTempJPEG(t), writeTempJPEG(t)}
+	var dispatched []string
+	var forced []bool
+	rec := &fakeTelegram{}
+	bot := newFakeBot(t, rec, config.Telegram{AllowedUsers: []int64{1}}, func(_ context.Context, url string, force bool) result.Result {
+		dispatched = append(dispatched, url)
+		forced = append(forced, force)
+		return result.Result{Status: result.Downloaded, Posts: []result.Post{{Title: "标题", Files: photos}}}
+	})
+
+	if err := bot.HandleMessage(context.Background(), message("10", "private", 1, "/force 2 https://example.com/a")); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != "https://example.com/a" {
+		t.Fatalf("dispatched=%v", dispatched)
+	}
+	if len(forced) != 1 || !forced[0] {
+		t.Fatalf("forced=%v", forced)
+	}
+	if len(rec.groups) != 1 || len(rec.groups[0]) != 2 {
+		t.Fatalf("groups=%+v", rec.groups)
+	}
+	if got := rec.groups[0][0].Caption; got != "" {
+		t.Fatalf("first caption=%q want empty", got)
+	}
+	if got := rec.groups[0][1].Caption; got != "标题" {
+		t.Fatalf("second caption=%q want 标题", got)
+	}
+}
+
 // TestForceCommandDownloadsAndUploadsAllLinks 验证 /force 支持空白分隔，
 // 且同一条消息内的所有链接都强制重下并回传。
 func TestForceCommandDownloadsAndUploadsAllLinks(t *testing.T) {

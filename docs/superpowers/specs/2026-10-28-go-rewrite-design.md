@@ -203,6 +203,8 @@ URL → sites.Detect → dispatch
 
 - 配置沿用 `config.json` 的 `telegram` 段：`bot_token`、`chat_id`、`allowed_users`、`process_message_ttl_seconds`、`delete_incoming_messages`；旧 `telegram.json` 自动兜底。
 - bot：长轮询 `getUpdates`，启动时跳过积压；支持 `message` 与 `channel_post`；频道不做用户白名单。
+  `/caption N <链接>` 为本次消息中的所有链接指定 caption 位置，`/force [N] <链接>`
+  在强制重下之外可选指定同一位置；不合法 `/caption` 只提示用法，不触发下载。
 - 上传规划：
   - 图片（jpg/jpeg/png/webp）与视频（mp4/mov/webm/mkv）混排，每组 ≤10，发 `sendMediaGroup`；
     按实际待上传文件总大小把每组限制在 49MiB 以内（转码后重新读取大小），
@@ -219,10 +221,12 @@ URL → sites.Detect → dispatch
     的照片再降级 `sendDocument`，避免一张坏图中断整批；
   - 视频 >50MB：ffmpeg 按码率预算压到 ~49MB，失败则跳过并提示本地路径；
   - 单图/单视频走 `sendPhoto`/`sendVideo`；其他文件走 `sendDocument`。
-- caption：`#作者 #站点` + 标题；相册只在第一项带 caption。作者名优先取
-  yt-dlp 的 `uploader`，为空时回退 `channel`/`uploader_id`（Instagram 的
-  `uploader` 是可能缺失的显示名）；标签保留 Unicode 字母与数字，避免日文、
-  韩文、西里尔文作者名被过滤后丢失标签。
+- caption：`#作者 #站点` + 标题；默认相册只在第一项带 caption。单次命令指定的
+  位置复用于消息中的每个链接及每个相册分组，不保存聊天偏好；`N <= 0` 钳制为
+  第一项，超过当前组长度时钳制为该组最后一项。作者名优先取 yt-dlp 的
+  `uploader`，为空时回退 `channel`/`uploader_id`（Instagram 的 `uploader` 是
+  可能缺失的显示名）；标签保留 Unicode 字母与数字，避免日文、韩文、西里尔文
+  作者名被过滤后丢失标签。
 - 过程提示消息按 TTL 自动删除；媒体消息永不删除。
 - `delete_incoming_messages` 显式开启时，链接全部处理完后按同一 TTL 删除
   用户原消息；默认关闭。没有链接或未授权消息不删除，群聊/频道权限不足
