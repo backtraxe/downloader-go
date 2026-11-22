@@ -71,6 +71,28 @@ func TestBuildCaptionPreservesEmojiAuthor(t *testing.T) {
 	}
 }
 
+func TestMakeTagPrefixesNumericAuthors(t *testing.T) {
+	cases := map[string]string{
+		"170":    "#author_170",
+		"0":      "#author_0",
+		"１２３":    "#author_１２３",
+		"170abc": "#170abc",
+		"小明170":  "#小明170",
+	}
+	for input, want := range cases {
+		if got := MakeTag(input); got != want {
+			t.Errorf("MakeTag(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestBuildCaptionShowsNumericAuthor(t *testing.T) {
+	want := "#author_170 #xiaohongshu\n作者：170\n标题"
+	if got := BuildCaption("xiaohongshu", "170", "标题"); got != want {
+		t.Fatalf("caption=%q want %q", got, want)
+	}
+}
+
 func TestBuildCaptionOmitsEmptyTags(t *testing.T) {
 	cases := []struct {
 		site, author, title, want string

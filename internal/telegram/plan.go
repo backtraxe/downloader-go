@@ -90,7 +90,23 @@ func MakeTag(text string) string {
 	if tag == "" {
 		return ""
 	}
+	if allDigits(tag) {
+		tag = "author_" + tag
+	}
 	return "#" + tag
+}
+
+// allDigits 判断文本是否为非空的纯 Unicode 数字。
+func allDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // isTagRune 判断 r 是否为标签中的普通文本字符。
@@ -106,7 +122,7 @@ func isEmojiRune(r rune) bool {
 // maxCaptionRunes 是 Telegram caption 的字符上限（按 rune 计）。
 const maxCaptionRunes = 1024
 
-// BuildCaption 生成媒体说明：先 #作者 #站点，含 emoji 时另起一行保留原昵称，
+// BuildCaption 生成媒体说明：先 #作者 #站点，含 emoji 或纯数字时另起一行保留原昵称，
 // 最后换行接标题。空标签省略；没有任何标签时只返回标题，避免出现前导换行。
 // 结果超过 Telegram 的 1024 字符上限时按 rune 边界截断，不会切坏 UTF-8。
 func BuildCaption(site, author, title string) string {
@@ -123,7 +139,7 @@ func BuildCaption(site, author, title string) string {
 		lines = append(lines, strings.Join(tags, " "))
 	}
 	author = strings.TrimSpace(author)
-	if author != "" && strings.IndexFunc(author, isEmojiRune) >= 0 {
+	if author != "" && (strings.IndexFunc(author, isEmojiRune) >= 0 || allDigits(author)) {
 		lines = append(lines, "作者："+author)
 	}
 	if title != "" {
