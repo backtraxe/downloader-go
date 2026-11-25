@@ -16,6 +16,9 @@ internal/cookies       Cookie 格式识别、导入、体检
 internal/fsutil        文件名清洗、原子去重、.part 原子替换、目录构造
 internal/media         扩展名推断、图片尺寸、装饰图判定
 internal/httpclient    utls Chrome 客户端、Cookie jar、重试、multipart
+internal/netdns        Termux DNS 解析器与 DOWNLOADER_DNS 配置
+internal/termuxenv     Termux CA 证书与 ZONEINFO 环境初始化
+internal/timezone      日志时区与 DOWNLOADER_TZ 配置
 internal/backend/xhs       小红书解析与下载
 internal/backend/douyin    抖音图文/视频解析与下载
 internal/backend/generic   通用网页抓取
@@ -44,6 +47,9 @@ cmd/downloader
   必须返回 `failed`。
 - 站点识别集中在 `internal/sites`，路由集中在 `internal/dispatch`；新增站点
   优先改这两处，不要在入口里加分支。
+- 进程启动在 `cmd/downloader/main.go` 依次执行 `termuxenv.ConfigureDefault`、
+  `timezone.ConfigureDefault`、`netdns.InstallDefault`，再安装默认 logger。
+  `ZONEINFO` 必须先于时区加载完成配置，不要任意调整这段初始化顺序。
 
 ## 常用命令
 
@@ -121,6 +127,9 @@ gh release view v0.1.1 --json tagName,isDraft,isPrerelease,assets
   得到完整 JPEG，再检查宽高与体积，后续缩放/压缩必须以这份 JPEG 为输入，
   不得再次解码原始 HEIF/HEIC，让某个 `hvc1` 图块覆盖正确产物。回归测试见
   `TestPreparePhotoHEICRechecksConvertedDimensions`。
+  只有 stderr 明确指出 `ipco` 子盒数量超过 libheif 安全限制时，才用
+  `--disable-limits` 重试一次，不能对所有图片默认关闭限制；回归测试见
+  `TestPreparePhotoHEICRetriesChildBoxLimit`。
 - **数据目录**：`--data-dir` > `DOWNLOADER_HOME` > 当前工作目录；
   `download/`、`cookies/`、`config.json` 都相对于数据目录。`--data-dir`
   只接受写在子命令之前。

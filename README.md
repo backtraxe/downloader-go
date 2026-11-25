@@ -152,6 +152,11 @@ HEIC/AVIF 先用 `heif-convert` 转成完整 JPEG；如果仍超出 Telegram 限
 后续缩放/压缩只处理这份 JPEG，不再解码原始 HEIF。转换失败的图片会按文件
 发送并记录原因。
 
+遇到 libheif 默认的 `ipco` 子盒数量上限（100）时，仅针对这一明确错误使用
+`heif-convert --disable-limits` 重试一次，其他转换仍先使用默认安全限制。
+该重试会关闭此次转换的全部 libheif 安全限制，可能放大恶意文件造成的内存或
+CPU 消耗风险。
+
 需要排查转换内容时，可在启动前设置 `DOWNLOADER_KEEP_TRANSCODES=1`：
 
 ```bash

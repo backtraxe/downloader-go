@@ -83,6 +83,37 @@ func TestPreparePhotoHEICUsesHEIFConvert(t *testing.T) {
 	}
 }
 
+func TestPreparePhotoHEICRetriesChildBoxLimit(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "many-properties.heic")
+	if err := os.WriteFile(src, heicMagic(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	u := &Uploader{WorkDir: t.TempDir(), Run: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		if len(calls) == 1 {
+			return nil, []byte("Could not read HEIF/AVIF file: Memory allocation error: Security limit exceeded: Maximum number of child boxes (100) in 'ipco' box exceeded."), errors.New("exit status 1")
+		}
+		writeTestJPEG(t, args[len(args)-1], 1200, 800)
+		return nil, nil, nil
+	}}
+
+	got, asDoc, err := u.PreparePhoto(context.Background(), src)
+	if err != nil || asDoc || got == src {
+		t.Fatalf("security-limit retry should produce a JPEG: %s %v %v", got, asDoc, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected one normal conversion and one retry, got %v", calls)
+	}
+	if strings.Contains(joinCall(calls[0]), "--disable-limits") {
+		t.Fatalf("normal conversion must keep libheif security limits: %v", calls[0])
+	}
+	if !strings.HasPrefix(joinCall(calls[1]), "heif-convert --disable-limits -q 90 ") {
+		t.Fatalf("retry must disable libheif limits for the rejected file: %v", calls[1])
+	}
+}
+
 func TestPreparePhotoHEICRechecksConvertedDimensions(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "wide.heic")

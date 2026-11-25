@@ -300,9 +300,21 @@ func (u *Uploader) runHEIFConvert(ctx context.Context, path, out string) error {
 		tool = "heif-convert"
 	}
 	slog.InfoContext(ctx, "使用 libheif 转换图片", "path", path, "tool", tool)
-	_, stderr, err := u.run(ctx, tool, "-q", "90", path, out)
+	args := []string{"-q", "90", path, out}
+	_, stderr, err := u.run(ctx, tool, args...)
 	if err != nil {
-		return fmt.Errorf("telegram: heif-convert: %w%s", err, stderrSuffix(stderr))
+		message := string(stderr)
+		childBoxLimit := strings.Contains(message, "Security limit exceeded") &&
+			strings.Contains(message, "Maximum number of child boxes") &&
+			strings.Contains(message, "'ipco'")
+		if !childBoxLimit {
+			return fmt.Errorf("telegram: heif-convert: %w%s", err, stderrSuffix(stderr))
+		}
+		slog.WarnContext(ctx, "HEIF 属性子盒超过 libheif 默认限制，关闭安全限制重试", "path", path, "tool", tool)
+		_, stderr, err = u.run(ctx, tool, append([]string{"--disable-limits"}, args...)...)
+		if err != nil {
+			return fmt.Errorf("telegram: heif-convert: %w%s", err, stderrSuffix(stderr))
+		}
 	}
 	return nil
 }
