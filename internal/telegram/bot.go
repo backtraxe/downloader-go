@@ -153,7 +153,6 @@ func (b *Bot) initialOffset(ctx context.Context) (int64, error) {
 // parseShareCommand 解析消息首字段中的单次下载命令，并返回剩余分享文案。
 func parseShareCommand(text string) (remaining string, force bool, captionIndex int, valid bool) {
 	captionIndex = 1
-	valid = true
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return text, false, captionIndex, true
