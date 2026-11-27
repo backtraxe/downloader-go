@@ -95,6 +95,23 @@ func TestIsHTMLContent(t *testing.T) {
 	}
 }
 
+func TestSameMediaKind(t *testing.T) {
+	if !SameMediaKind(".jpg", ".webp") || !SameMediaKind(".JPG", ".png") {
+		t.Fatal("image variants should share kind")
+	}
+	if !SameMediaKind(".mp4", ".mov") || !SameMediaKind(".pdf", "") {
+		t.Fatal("non-image variants should share kind")
+	}
+	if SameMediaKind(".png", ".mp4") || SameMediaKind(".mp4", ".png") {
+		t.Fatal("image and video must not share kind")
+	}
+	for _, ext := range []string{".jpg", ".png", ".webp", ".avif", ".heic"} {
+		if !IsImageExt(ext) {
+			t.Fatalf("%s should be image", ext)
+		}
+	}
+}
+
 func TestDecodeDimensions(t *testing.T) {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 10, 20))); err != nil {

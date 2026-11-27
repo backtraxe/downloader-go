@@ -56,7 +56,7 @@ type DownloadOptions struct {
 // DownloadFile 把 rawURL 流式下载到 filepath，返回实际写入的路径。
 //
 // 与 Python 版 download_file 口径一致：
-//   - !Force 时先按主文件名匹配已有文件（跨扩展名变体），命中即跳过；
+//   - !Force 时先按主文件名匹配已有同类文件（同 stem 的扩展名变体），命中即跳过；
 //   - 成功后按 URL/Content-Type 修正扩展名（如 webp 存成 .jpg）；
 //   - !Force 用 fsutil.UniquePath 原子去重，绝不覆盖；Force 写 .part 后
 //     原子替换目标文件；

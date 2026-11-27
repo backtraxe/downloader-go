@@ -166,6 +166,29 @@ func TestExistingByStemIgnoresYTDLAndPartFragments(t *testing.T) {
 	}
 }
 
+func TestExistingByStemMatchesOnlySameMediaKind(t *testing.T) {
+	dir := t.TempDir()
+	// 并发批次里同 stem 的图片与实况视频互不冒充：先落盘的 003.png
+	// 不能让 003.mp4 被误判已下载。
+	os.WriteFile(filepath.Join(dir, "003.png"), nil, 0o600)
+	if _, ok := ExistingByStem(filepath.Join(dir, "003.mp4")); ok {
+		t.Fatal("image must not satisfy video")
+	}
+	if _, ok := ExistingByStem(filepath.Join(dir, "003.jpg")); !ok {
+		t.Fatal("image variants should match")
+	}
+	os.Remove(filepath.Join(dir, "003.png"))
+	// 反向同理：已有视频不满足图片 stem。
+	os.WriteFile(filepath.Join(dir, "004.mp4"), nil, 0o600)
+	if _, ok := ExistingByStem(filepath.Join(dir, "004.png")); ok {
+		t.Fatal("video must not satisfy image")
+	}
+	// 非图片之间的扩展名变体仍然互认：mp4 ↔ webm。
+	if _, ok := ExistingByStem(filepath.Join(dir, "004.webm")); !ok {
+		t.Fatal("non-image variants should match")
+	}
+}
+
 func TestBuildDownloadDirEmptySite(t *testing.T) {
 	// 纯函数，仅校验空站点名不会 panic（仅产生一层）。
 	got := BuildDownloadDir("data", "", "t", "a")

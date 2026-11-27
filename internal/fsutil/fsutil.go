@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/backtraxe/downloader-go/internal/media"
 )
 
 // defaultNameMaxLen 与 Python 版 sanitize_filename 的默认 max_len 一致。
@@ -119,16 +121,20 @@ func splitExt(path string) (stem, ext string) {
 	return strings.TrimSuffix(path, ext), ext
 }
 
-// ExistingByStem 在 path 所在目录查找同主文件名（stem）的任意扩展名文件，
+// ExistingByStem 在 path 所在目录查找同主文件名（stem）的同类媒体文件，
 // 命中即返回该路径。用于“重复链接已存在即跳过”：下载前不知道最终扩展名，
 // 按 stem 匹配可跨 .jpg/.webp 等变体识别同一张图。
+//
+// 目标与已有文件必须同属图片或同属非图片（001.mp4 / 001.mov）才命中：
+// 同 stem 的图片与实况视频（001.png 与 001.mp4）是两种产物，并发批次里
+// 先落盘的一方不能让另一方被误判已下载。
 //
 // 遍历目录后按字面量比较 stem，不用 filepath.Glob：标题里的 [、] 会被
 // glob 当成字符类（"[MV] Song" 匹配不到自身，单个 [ 还会返回 ErrBadPattern）。
 // .part/.ytdl/.part-<n> 等下载残留与子目录不算已完成文件；目录不可读时
 // 返回 false。
 func ExistingByStem(path string) (string, bool) {
-	stem, _ := splitExt(path)
+	stem, targetExt := splitExt(path)
 	dir := filepath.Dir(stem)
 	base := filepath.Base(stem)
 
@@ -145,6 +151,9 @@ func ExistingByStem(path string) (string, bool) {
 			continue
 		}
 		if strings.TrimSuffix(name, filepath.Ext(name)) != base {
+			continue
+		}
+		if !media.SameMediaKind(targetExt, filepath.Ext(name)) {
 			continue
 		}
 		return filepath.Join(dir, name), true

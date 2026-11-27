@@ -226,7 +226,7 @@ func (d *Downloader) downloadOne(
 	marker := filepath.Join(dir, fmt.Sprintf(".%03d.skip", number))
 
 	if !force {
-		// 同一序号已有任意扩展名产物（001.jpg / 001.png）即视为已下载。
+		// 同一序号已有同类扩展名产物（001.jpg / 001.png）即视为已下载。
 		if _, exists := fsutil.ExistingByStem(target); exists {
 			return outcomeSkipped, ""
 		}

@@ -75,6 +75,37 @@ func IsHTMLContent(contentType string) bool {
 	return ok
 }
 
+// imageExts 是按扩展名即视为图片的集合，含 extByContentType 的全部
+// image/* 扩展名与 jpeg/bmp/tiff 等常见变体。
+var imageExts = map[string]struct{}{
+	".jpg":  {},
+	".jpeg": {},
+	".png":  {},
+	".webp": {},
+	".gif":  {},
+	".bmp":  {},
+	".svg":  {},
+	".avif": {},
+	".heic": {},
+	".heif": {},
+	".tif":  {},
+	".tiff": {},
+}
+
+// IsImageExt 判断扩展名（含前导点，大小写不敏感）是否属于图片。
+func IsImageExt(ext string) bool {
+	_, ok := imageExts[strings.ToLower(ext)]
+	return ok
+}
+
+// SameMediaKind 判断两个扩展名（含前导点）是否属于同一媒体种类。
+// 目前只区分图片与非图片：001.jpg 与 001.webp 同类，而 001.png 与
+// 001.mp4 不同类——图片和共用序号的实况视频是两种产物，不能互相
+// 冒充“已下载”。
+func SameMediaKind(extA, extB string) bool {
+	return IsImageExt(extA) == IsImageExt(extB)
+}
+
 // normalizeContentType 取 Content-Type 的分号前主类型，去空白并转小写。
 func normalizeContentType(contentType string) string {
 	ct := contentType

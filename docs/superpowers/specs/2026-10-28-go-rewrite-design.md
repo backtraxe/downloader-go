@@ -257,7 +257,9 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 - 目录根由数据根目录决定（默认 CWD；可用 `--data-dir` / `DOWNLOADER_HOME` 覆盖），其余相对布局不变。
 - 文件名清洗规则与 Python 版一致（去控制字符/路径分隔符/Windows 保留字符，截断 80）。
 - `unique_path` 使用 `O_CREATE|O_EXCL` 原子占位；`--force` 写 `.part` 后 `os.Rename`。
-- 重复链接默认跳过；存在同 stem 的扩展名变体也视为已下载。
+- 重复链接默认跳过；存在同 stem 的同类扩展名变体视为已下载（001.jpg / 001.webp 互认）。
+  与 Python 基线的差异：图片与视频不互认（001.png 不能替代 001.mp4），
+  避免并发批次里先落盘的图片让实况视频被误判“已存在”而缺失。
 
 ## 6. 测试策略
 
@@ -339,6 +341,7 @@ download/<site>[/<author>]/<标题>.<ext>            # yt-dlp 单视频
 - **行为对齐基线**：Python 仓库 commit `1a4f129`（2026-10-28）。fixtures、签名测试向量、用户可见文案都以该 commit 为准；重写期间不跟踪 Python 仓库的后续提交。
 - **许可证**：新仓库整体 MIT；`internal/douyinsign/` 移植自 Apache-2.0 的 Evil0ctal/Douyin_TikTok_Download_API，相关文件头保留 Apache-2.0 声明，仓库根增加 `NOTICE`，Release 包一并附带 `LICENSE` 与 `NOTICE`。
 - 用户沿用现有 `cookies/`、`config.json` 与 `download/`。
-- 已下载文件按同 stem 规则识别并跳过，不产生重复副本。
+- 已下载文件按同 stem 且同类扩展名（图片 / 非图片）的规则识别并跳过，不产生重复副本；
+  同 stem 的图片与实况视频（001.png / 001.mp4）互不冒充，实况不再被已有图片误跳过。
 - Python 仓库保留一段时间；Go 版达到功能对齐后再在 README 标记维护状态。
 - 新仓库初始提交包含本设计文档、README、LICENSE（MIT）、`go.mod` 与最小骨架。

@@ -390,8 +390,8 @@ func (d *Downloader) downloadTasks(ctx context.Context, tasks []mediaTask, refer
 // downloadOne 处理单个媒体任务：幂等判断、下载与 HTML 拦截。
 func (d *Downloader) downloadOne(ctx context.Context, task mediaTask, header http.Header, force bool) (outcome, string) {
 	if !force {
-		// 同一序号已有任意扩展名产物（001.jpg / 001.png / 001.mp4）即视为
-		// 已下载，避免重复链接产生 001_1 副本。
+		// 同一序号已有同类扩展名产物即视为已下载，避免重复链接产生 001_1
+		// 副本；图片与实况视频（001.png / 001.mp4）互不冒充。
 		if _, exists := fsutil.ExistingByStem(task.target); exists {
 			return outcomeSkipped, ""
 		}

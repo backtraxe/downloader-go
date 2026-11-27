@@ -393,6 +393,64 @@ func TestDownloadNoteWritesLiveAndNoteVideo(t *testing.T) {
 	}
 }
 
+// TestDownloadNoteLiveVideoNotSatisfiedByImage 回归：同 stem 的图片与实况
+// 视频互不冒充。曾有批内 003.png 先落盘，使并发中的 003.mp4 被“已存在”误跳过，
+// 状态仍是 success 但实况缺失。
+func TestDownloadNoteLiveVideoNotSatisfiedByImage(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/note/7666381907030529443":
+			detail := map[string]any{
+				"awemeId":    "7666381907030529443",
+				"desc":       "多图笔记",
+				"authorInfo": map[string]any{"nickname": "作者乙"},
+				"images": []any{
+					map[string]any{"urlList": []any{srv.URL + "/img1.png"}},
+					map[string]any{"urlList": []any{srv.URL + "/img2.png"}},
+					map[string]any{
+						"urlList": []any{srv.URL + "/img3.png"},
+						"video":   map[string]any{"playAddr": map[string]any{"urlList": []any{srv.URL + "/live3.mp4"}}},
+					},
+				},
+				"video": map[string]any{"playAddr": map[string]any{"urlList": []any{srv.URL + "/note.mp4"}}},
+			}
+			fmt.Fprint(w, makePaceFHTML(detail))
+		case "/img1.png", "/img2.png", "/img3.png":
+			writePNG(w)
+		case "/live3.mp4", "/note.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p'})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	d := testDownloader(t)
+	dir := filepath.Join(d.DataDir, "download", "douyin", "作者乙", "多图笔记_7666381907030529443")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "003.png"), []byte("prev"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := d.DownloadNote(context.Background(), srv.URL+"/note/7666381907030529443", "UIFID=x", false)
+	if res.Status != result.Downloaded {
+		t.Fatalf("status %s msg %s", res.Status, res.Message)
+	}
+	for _, name := range []string{"001.png", "002.png", "003.mp4", "video.mp4"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	// 已存在的 003.png 跳过，其余四项新写入。
+	if len(res.Posts[0].Files) != 4 {
+		t.Fatalf("files: %+v", res.Posts[0].Files)
+	}
+}
+
 const jsvmPage = `<html><body><script>var glb;(glb="undefined"==typeof window?global:window)._$jsvmprt=function(){}</script></body></html>`
 
 func serveDetailJSON(w http.ResponseWriter, detail map[string]any) {
