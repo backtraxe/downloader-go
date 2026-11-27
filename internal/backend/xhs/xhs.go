@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,12 +27,16 @@ const (
 	// maxPageBytes 限制单次页面响应体，避免异常响应打满内存。
 	maxPageBytes = 16 << 20
 
-	// downloadConcurrency 与 Python 版 ThreadPoolExecutor(max_workers=5) 一致。
-	downloadConcurrency = 5
+	// downloadConcurrency 压低同账号并发媒体请求，降低小红书风控概率。
+	downloadConcurrency = 2
 
 	// pageAttempts 是页面请求的总尝试次数（含首次）；瞬时网络错误与
 	// 429/5xx 按 pageBackoff 退避。
 	pageAttempts = 3
+
+	// pageDelayMin / pageDelayMax 是连续两个笔记页请求之间的随机间隔。
+	pageDelayMin = 2 * time.Second
+	pageDelayMax = 5 * time.Second
 )
 
 // pageBackoff 是页面请求失败后每次重试前的等待时间。
@@ -69,6 +74,10 @@ func isNotePageURL(rawURL string) bool {
 type Downloader struct {
 	HTTP    *httpclient.Client
 	DataDir string
+
+	// pageMu 保护 lastPageAt，限制进程内连续笔记页请求的节奏。
+	pageMu   sync.Mutex
+	lastPage time.Time
 }
 
 // Download 下载小红书笔记的全部媒体（图片、实况视频、笔记级视频）。
@@ -100,6 +109,10 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 			return failed("请求失败（网络异常或 Cookie/风控问题）")
 		}
 		pageURL = resolved
+	}
+
+	if !d.waitPage(ctx) {
+		return failed("请求等待时被取消")
 	}
 
 	body, finalURL, status, err := d.fetchPage(ctx, pageURL, cookie)
@@ -167,7 +180,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL, cookie string, force 
 	}
 
 	tasks := buildTasks(note, dir)
-	counts, files := d.downloadTasks(ctx, tasks, finalURL, cookie, force)
+	counts, files := d.downloadTasks(ctx, tasks, finalURL, force)
 
 	res := result.FromCounts(counts)
 	res.Posts = []result.Post{{
@@ -277,6 +290,27 @@ func backoffFor(attempt int) time.Duration {
 	return pageBackoff[attempt]
 }
 
+// waitPage 让连续笔记页请求间隔 2–5 秒，返回是否可以继续。
+func (d *Downloader) waitPage(ctx context.Context) bool {
+	d.pageMu.Lock()
+	defer d.pageMu.Unlock()
+
+	if !d.lastPage.IsZero() {
+		target := pageDelayMin + time.Duration(rand.N(int(pageDelayMax-pageDelayMin)))
+		if wait := target - time.Since(d.lastPage); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false
+			case <-timer.C:
+			}
+		}
+	}
+	d.lastPage = time.Now()
+	return true
+}
+
 // mediaTask 是一个待下载的媒体直链与目标路径。
 type mediaTask struct {
 	url    string
@@ -325,7 +359,7 @@ const (
 )
 
 // downloadTasks 以固定并发下载全部任务，结果按任务原始顺序汇总。
-func (d *Downloader) downloadTasks(ctx context.Context, tasks []mediaTask, referer, cookie string, force bool) (result.Counts, []string) {
+func (d *Downloader) downloadTasks(ctx context.Context, tasks []mediaTask, referer string, force bool) (result.Counts, []string) {
 	var counts result.Counts
 	if len(tasks) == 0 {
 		return counts, nil
@@ -337,7 +371,7 @@ func (d *Downloader) downloadTasks(ctx context.Context, tasks []mediaTask, refer
 		saved   string
 	}
 
-	header := mediaHeaders(referer, cookie)
+	header := mediaHeaders(referer)
 	jobs := make(chan int)
 	results := make(chan taskResult, len(tasks))
 
@@ -426,15 +460,13 @@ func pageHeaders() http.Header {
 	return header
 }
 
-// mediaHeaders 是媒体下载请求头：Referer 为页面最终 URL，Cookie 沿用
-// 页面请求的同一段请求头。UA 同样交给 httpclient Profile。
-func mediaHeaders(referer, cookie string) http.Header {
+// mediaHeaders 是媒体下载请求头：Referer 为页面最终 URL。媒体直链来自
+// 已通过 Cookie 打开的笔记页，下载时不携带登录态，避免把大流量 CDN
+// 请求计入账号画像；UA 同样交给 httpclient Profile。
+func mediaHeaders(referer string) http.Header {
 	header := http.Header{}
 	if referer != "" {
 		header.Set("Referer", referer)
-	}
-	if cookie != "" {
-		header.Set("Cookie", cookie)
 	}
 	return header
 }

@@ -14,7 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/backtraxe/downloader-go/internal/httpclient"
 	"github.com/backtraxe/downloader-go/internal/result"
@@ -381,9 +383,9 @@ func TestShortLinkResolvesToNote(t *testing.T) {
 
 // TestShortLinkAcrossHostsCarriesCookie 复现 Go 在跨域名重定向时丢弃
 // 手动 Cookie 头的行为：短链必须先不带 Cookie 解析到最终地址，随后
-// 笔记页请求再带上用户 Cookie。
+// 笔记页请求再带上用户 Cookie。媒体直链不需要登录态，不能携带 Cookie。
 func TestShortLinkAcrossHostsCarriesCookie(t *testing.T) {
-	var shortCookie, noteCookie string
+	var shortCookie, noteCookie, mediaCookie string
 	var serverURL string
 
 	mux := http.NewServeMux()
@@ -410,6 +412,7 @@ func TestShortLinkAcrossHostsCarriesCookie(t *testing.T) {
 		fmt.Fprint(w, pageHTML(t, state))
 	})
 	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) {
+		mediaCookie = r.Header.Get("Cookie")
 		writePNG(t, w)
 	})
 	server := newTLSServer(t, mux)
@@ -425,6 +428,9 @@ func TestShortLinkAcrossHostsCarriesCookie(t *testing.T) {
 	}
 	if !strings.Contains(noteCookie, "a1=abc") {
 		t.Fatalf("final note request missing cookie: %q", noteCookie)
+	}
+	if mediaCookie != "" {
+		t.Fatalf("media request must not carry cookies, got %q", mediaCookie)
 	}
 }
 
@@ -453,5 +459,78 @@ func TestDirectBareExploreNeedsToken(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, "xsec_token") {
 		t.Fatalf("message=%q want xsec_token hint", res.Message)
+	}
+}
+
+func TestDownloadLimitsConcurrencyToTwo(t *testing.T) {
+	var active, max atomic.Int32
+	release := make(chan struct{})
+
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/explore/note1", func(w http.ResponseWriter, r *http.Request) {
+		imageList := make([]any, 4)
+		for i := range imageList {
+			imageList[i] = map[string]any{"urlDefault": serverURL + "/img/" + fmt.Sprint(i+1)}
+		}
+		state := map[string]any{"note": map[string]any{"noteDetailMap": map[string]any{
+			"note1": map[string]any{"note": map[string]any{
+				"noteId": "note1", "title": "并发", "user": map[string]any{"nickname": "作者"},
+				"imageList": imageList,
+			}},
+		}}}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, pageHTML(t, state))
+	})
+	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		for {
+			observed := max.Load()
+			if current <= observed || max.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+		writePNG(t, w)
+	})
+	server := newTLSServer(t, mux)
+	serverURL = server.URL
+
+	d := newTestDownloader(t)
+	done := make(chan result.Result)
+	go func() {
+		done <- d.Download(context.Background(), serverURL+"/explore/note1?xsec_token=tok", "a1=abc", false)
+	}()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for active.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+
+	res := <-done
+	if res.Status != result.Downloaded {
+		t.Fatalf("status=%s message=%s", res.Status, res.Message)
+	}
+	if got := max.Load(); got > 2 {
+		t.Fatalf("media concurrency=%d want <= 2", got)
+	}
+}
+
+func TestPageRequestsHaveMinimumInterval(t *testing.T) {
+	server := newXSHSite(t)
+	d := newTestDownloader(t)
+	pageURL := server.URL + "/explore/note1?xsec_token=tok"
+
+	started := time.Now()
+	if res := d.Download(context.Background(), pageURL, "a1=abc", false); res.Status != result.Downloaded {
+		t.Fatalf("first download: %s %s", res.Status, res.Message)
+	}
+	if res := d.Download(context.Background(), pageURL, "a1=abc", false); res.Status != result.Skipped {
+		t.Fatalf("second download: %s %s", res.Status, res.Message)
+	}
+	if elapsed := time.Since(started); elapsed < 2*time.Second {
+		t.Fatalf("page request interval=%s want >= 2s", elapsed)
 	}
 }
